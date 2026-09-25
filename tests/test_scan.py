@@ -99,3 +99,26 @@ def test_cli_error_event(tmp_path: Path, capsys):
     assert main(["scan", str(tmp_path / "없는폴더")]) == 1
     last = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert last["type"] == "error"
+
+
+def test_serve_mode_handles_jobs_and_errors(tmp_path: Path):
+    import io as _io
+
+    from quickortho_engine.cli import serve
+
+    make_jpeg(tmp_path / "a.jpg", model="FC6310S", focal=8.8, focal35=24)
+    reqs = "\n".join([
+        json.dumps({"job": 1, "argv": ["scan", str(tmp_path)]}),
+        json.dumps({"job": 2, "argv": ["scan", str(tmp_path / "없음")]}),
+        json.dumps({"job": 3, "argv": ["nope"]}),
+        json.dumps({"job": 4, "argv": ["version"]}),
+    ]) + "\n"
+    out = _io.StringIO()
+    assert serve(_io.StringIO(reqs), out) == 0
+    ev = [json.loads(l) for l in out.getvalue().splitlines()]
+    assert ev[0]["type"] == "ready" and ev[0]["ok"] is True
+    done = {e["job"]: e["code"] for e in ev if e["type"] == "done"}
+    assert done == {1: 0, 2: 1, 3: 1, 4: 0}
+    results = {e["job"]: e for e in ev if e["type"] == "result"}
+    assert results[1]["data"]["summary"]["read_ok"] == 1
+    assert all("job" in e for e in ev if e["type"] in ("stage", "progress", "result", "error"))

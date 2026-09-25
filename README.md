@@ -16,6 +16,26 @@ QuickOrtho 데스크톱 앱이 사이드카로 실행하는 Python 처리 엔진
 | `result` | `command`, `data` | 명령 결과 (명령당 1회) |
 | `error` | `message`, `detail` | 오류. 이후 종료 코드 1로 종료함 |
 
+## 상주 모드 (`serve`)
+
+앱은 엔진을 `serve` 모드로 한 번 띄워 무거운 라이브러리를 미리 불러 두고, 작업마다 재사용함.
+
+- 요청: stdin에 한 줄 하나 `{"job": 1, "argv": ["preview", "<폴더>", "-o", "<결과>"]}`
+- 시작 시 `{"type": "ready", "ok": true, "version": "...", "warmup_s": 1.0}` 출력
+- 작업 이벤트에는 `"job"` 필드가 붙고, 끝나면 `{"type": "done", "job": 1, "code": 0}` 출력
+- 작업은 한 번에 하나씩 처리함. 중단은 앱이 프로세스를 종료하고 새로 띄우는 방식임
+
+## 배포용 번들 (PyInstaller)
+
+```bash
+pip install pyinstaller .
+pyinstaller -y quickortho-engine.spec     # → dist/quickortho-engine/ (onedir)
+```
+
+- onefile 대신 onedir를 쓰는 이유: onefile은 실행할 때마다 임시 폴더에 압축을 풀어 기동이 느려짐
+- CI에서 OS별로 번들을 만들어 앱 설치파일의 리소스(`engine/`)로 포함함 (`src-tauri/tauri.bundle.conf.json`)
+- 번들 크기는 약 600 MB(압축 시 약 210 MB)임. pycolmap, OpenCV, GDAL, BLAS 라이브러리가 대부분임
+
 ## 명령
 
 ```bash

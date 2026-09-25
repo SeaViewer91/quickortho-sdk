@@ -10,10 +10,13 @@ from typing import Any, TextIO
 class Emitter:
     """이벤트를 한 줄에 JSON 객체 하나씩 출력한다."""
 
-    def __init__(self, stream: TextIO | None = None) -> None:
+    def __init__(self, stream: TextIO | None = None, job: int | None = None) -> None:
         self._stream = stream if stream is not None else sys.stdout
+        self._job = job  # serve 모드에서 이벤트가 어느 작업의 것인지 표시
 
     def _emit(self, event: dict[str, Any]) -> None:
+        if self._job is not None:
+            event = {"job": self._job, **event}
         self._stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         self._stream.flush()
 
