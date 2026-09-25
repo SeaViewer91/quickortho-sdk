@@ -102,3 +102,16 @@ def test_run_preview_end_to_end(tmp_path: Path):
     # 네 모서리는 좌상→우상→우하→좌하 순서이고 경위도 범위 안
     (lo0, la0), (lo1, _), (_, la2), _ = res["corners_lonlat"]
     assert lo0 < lo1 and la2 < la0
+
+
+def test_run_preview_skip_quicklook(tmp_path: Path):
+    img_dir = tmp_path / "imgs"
+    img_dir.mkdir()
+    for i in range(3):
+        make_jpeg(img_dir / f"DJI_{i:04d}.JPG", model="FC6310S", focal=8.8, focal35=24, size=(160, 120),
+                  lat=35.1, lon=129.0 + i * 0.0003,
+                  xmp=_xmp(RelativeAltitude="+100.0", GimbalPitchDegree="-90.0", GimbalYawDegree="+0.0"))
+    res = run_preview(img_dir, tmp_path / "out", Emitter(__import__("io").StringIO()), max_size=256, quicklook=False)
+    assert res["outputs"]["quicklook"] is None
+    assert not (tmp_path / "out" / "quicklook.png").exists()
+    assert Path(res["outputs"]["coverage"]).exists() and Path(res["outputs"]["geojson"]).exists()

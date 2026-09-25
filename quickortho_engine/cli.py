@@ -27,6 +27,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prev.add_argument("folder", type=Path, help="영상 폴더")
     p_prev.add_argument("-o", "--output", type=Path, required=True, help="결과 폴더")
     p_prev.add_argument("--max-size", type=int, default=2048, help="간이 모자이크 긴 변(px)")
+    p_prev.add_argument(
+        "--skip-quicklook", action="store_true", help="간이 모자이크 없이 촬영 범위·중복도만 계산 (데이터 불러오기)"
+    )
 
     p_ortho = sub.add_parser("ortho", help="정사 모자이크 생성 (fast ortho)")
     p_ortho.add_argument("folder", type=Path, help="영상 폴더")
@@ -63,7 +66,10 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "preview":
             from .preview import run_preview
 
-            out.result("preview", run_preview(args.folder, args.output, out, max_size=args.max_size))
+            res = run_preview(
+                args.folder, args.output, out, max_size=args.max_size, quicklook=not args.skip_quicklook
+            )
+            out.result("preview", res)
         elif args.command == "ortho":
             # 무거운 의존성(pycolmap, rasterio 등)은 ortho 명령에서만 불러옴
             from .pipeline import OrthoOptions, run_ortho

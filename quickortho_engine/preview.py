@@ -370,7 +370,10 @@ def colorize_coverage(grid: np.ndarray, gaps: np.ndarray) -> np.ndarray:
     return rgba
 
 
-def run_preview(folder: Path, out_dir: Path, out: Emitter, max_size: int = 2048) -> dict[str, Any]:
+def run_preview(
+    folder: Path, out_dir: Path, out: Emitter, max_size: int = 2048, quicklook: bool = True
+) -> dict[str, Any]:
+    """quicklook=False이면 영상 디코딩 없이 EXIF 기반 촬영 범위·중복도·누락 구역만 계산한다 (데이터 불러오기)."""
     t0 = time.perf_counter()
     folder, out_dir = Path(folder), Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -403,9 +406,12 @@ def run_preview(folder: Path, out_dir: Path, out: Emitter, max_size: int = 2048)
     low_polys = mask_to_polygons(cov.pop("_low_mask"), bounds, cell, min_area_m2=4 * cell * cell)
     fwd = forward_overlap(polys)
 
-    out.stage("quicklook", "간이 모자이크 생성")
-    quick = render_quicklook(poses, folder, bounds, cell, out)
-    Image.fromarray(quick, "RGBA").save(out_dir / "quicklook.png", compress_level=1)
+    quicklook_path: Path | None = None
+    if quicklook:
+        out.stage("quicklook", "간이 모자이크 생성")
+        quick = render_quicklook(poses, folder, bounds, cell, out)
+        quicklook_path = out_dir / "quicklook.png"
+        Image.fromarray(quick, "RGBA").save(quicklook_path, compress_level=1)
     Image.fromarray(colorize_coverage(grid, gaps_mask), "RGBA").save(out_dir / "coverage.png", compress_level=1)
 
     # WGS84 변환 (GeoJSON, 지도 오버레이용 네 모서리)
@@ -453,7 +459,7 @@ def run_preview(folder: Path, out_dir: Path, out: Emitter, max_size: int = 2048)
         "flight_height_m": {"min": min(p.h for p in poses), "max": max(p.h for p in poses)},
         "gaps": len(gap_polys),
         "outputs": {
-            "quicklook": str(out_dir / "quicklook.png"),
+            "quicklook": str(quicklook_path) if quicklook_path else None,
             "coverage": str(out_dir / "coverage.png"),
             "geojson": str(geojson_path),
         },
