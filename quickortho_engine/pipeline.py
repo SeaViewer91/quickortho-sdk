@@ -143,6 +143,7 @@ def run_ortho(folder: Path, out_dir: Path, opts: OrthoOptions, out: Emitter) -> 
         finalize_cog(tmp, final)
         tmp.unlink(missing_ok=True)
         _write_preview(final, out_dir / "preview.png")
+        corners = _corners_lonlat(final)
         timings["finalize_s"] = time.perf_counter() - t0
 
         if not opts.keep_work:
@@ -172,6 +173,7 @@ def run_ortho(folder: Path, out_dir: Path, opts: OrthoOptions, out: Emitter) -> 
             "dsm": str(out_dir / "dsm.tif"),
             "preview": str(out_dir / "preview.png"),
         },
+        "preview_corners_lonlat": corners,
         "timings_s": {k: round(v, 2) for k, v in timings.items()},
         "peak_memory_mb": round(mem.peak / 1024 / 1024, 1),
         "warnings": warnings,
@@ -204,6 +206,19 @@ def _write_dsm(dsm, path: Path, crs) -> None:
         crs=crs, transform=transform, compress="deflate",
     ) as ds:
         ds.write(dsm.z, 1)
+
+
+def _corners_lonlat(path: Path) -> list[list[float]]:
+    """래스터 네 모서리(좌상, 우상, 우하, 좌하)의 경위도. 앱 지도 오버레이용."""
+    from pyproj import Transformer
+
+    with rasterio.open(path) as ds:
+        b = ds.bounds
+        tr = Transformer.from_crs(ds.crs.to_epsg(), 4326, always_xy=True)
+    xs = [b.left, b.right, b.right, b.left]
+    ys = [b.top, b.top, b.bottom, b.bottom]
+    lon, lat = tr.transform(xs, ys)
+    return [[float(a), float(c)] for a, c in zip(lon, lat)]
 
 
 def _write_preview(path: Path, png_path: Path, max_size: int = 2048) -> None:
