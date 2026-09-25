@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quickortho-engine"
-version = "0.1.0"
+version = "0.2.0"
 description = "QuickOrtho 처리 엔진 사이드카 (스캔, 미리보기, SfM, 정사투영)"
 readme = "README.md"
 license = "MIT"

@@ -10,25 +10,27 @@ from scipy import ndimage
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 
-from .geo import UtmProjector
+from .geo import Projector, UtmProjector
 
 
 @dataclass
 class GeoResult:
-    projector: UtmProjector
+    projector: Projector
+    origin: np.ndarray  # 지역 좌표계 원점 (투영 좌표)
     gps_residual_m: float  # 정렬 후 카메라 위치와 GPS의 RMS 수평 차이
     num_aligned: int
 
 
-def georeference(
+def align_to_gps(
     rec: pycolmap.Reconstruction,
     gps: dict[str, tuple[float, float, float]],
+    projector: Projector,
+    origin: np.ndarray,
     ransac_max_error_m: float = 10.0,
-) -> GeoResult:
-    """카메라 중심을 GPS 위치(UTM)에 맞추는 닮음변환(Sim3)을 RANSAC으로 추정해 적용한다.
+) -> tuple[float, int]:
+    """카메라 중심을 GPS 위치(투영 좌표 - origin)에 맞추는 닮음변환(Sim3)을 RANSAC으로 추정해 적용한다.
 
-    gps: 영상 이름 → (lon, lat, alt). RTK가 없는 일반 GNSS는 수 m 오차가 있으므로
-    RANSAC 임계값을 넉넉하게 둔다. 모자이크 내부 정합은 SfM이 담당한다.
+    rec는 지역 좌표계(투영 좌표 - origin)로 바뀐다. 반환: (수평 RMS 잔차 m, 정렬에 쓴 영상 수)
     """
     names = [img.name for img in rec.images.values() if img.name in gps and img.has_pose]
     if len(names) < 3:
@@ -36,23 +38,38 @@ def georeference(
     lon = np.array([gps[n][0] for n in names])
     lat = np.array([gps[n][1] for n in names])
     alt = np.array([gps[n][2] for n in names])
-    proj = UtmProjector(float(np.median(lon)), float(np.median(lat)))
-    e, n_ = proj.forward(lon, lat)
-    tgt = np.column_stack([e, n_, alt])
-
-    # UTM 좌표는 값이 커서 수치 안정성을 위해 원점 이동 후 정렬하고, 이후 다시 더한다
-    origin = np.array([np.median(e), np.median(n_), 0.0])
+    e, n_ = projector.forward(lon, lat)
+    tgt = np.column_stack([e, n_, alt]) - np.asarray(origin, dtype=np.float64)
     ransac = pycolmap.RANSACOptions()
     ransac.max_error = ransac_max_error_m
-    sim3 = pycolmap.align_reconstruction_to_locations(rec, names, tgt - origin, 3, ransac)
+    sim3 = pycolmap.align_reconstruction_to_locations(rec, names, tgt, 3, ransac)
     if sim3 is None:
         raise RuntimeError("좌표 정렬 실패: GPS와 SfM 카메라 배치가 일치하지 않음")
     rec.transform(sim3)
-    rec.transform(pycolmap.Sim3d(1.0, pycolmap.Rotation3d(), origin))
-
     centers = np.array([rec.find_image_with_name(n).projection_center() for n in names])
     residual = float(np.sqrt(np.mean(np.sum((centers[:, :2] - tgt[:, :2]) ** 2, axis=1))))
-    return GeoResult(projector=proj, gps_residual_m=residual, num_aligned=len(names))
+    return residual, len(names)
+
+
+def georeference(
+    rec: pycolmap.Reconstruction,
+    gps: dict[str, tuple[float, float, float]],
+    ransac_max_error_m: float = 10.0,
+) -> GeoResult:
+    """SfM 재구성을 GPS 기준 UTM 좌표(절대값)로 옮긴다.
+
+    gps: 영상 이름 → (lon, lat, alt). RTK가 없는 일반 GNSS는 수 m 오차가 있으므로
+    RANSAC 임계값을 넉넉하게 둔다. 모자이크 내부 정합은 SfM이 담당한다.
+    """
+    lon = np.array([v[0] for v in gps.values()])
+    lat = np.array([v[1] for v in gps.values()])
+    proj = UtmProjector(float(np.median(lon)), float(np.median(lat)))
+    e, n_ = proj.forward(lon, lat)
+    # UTM 좌표는 값이 커서 수치 안정성을 위해 원점 이동 후 정렬하고, 이후 다시 더한다
+    origin = np.array([round(float(np.median(e))), round(float(np.median(n_))), 0.0])
+    residual, num = align_to_gps(rec, gps, proj, origin, ransac_max_error_m)
+    rec.transform(pycolmap.Sim3d(1.0, pycolmap.Rotation3d(), origin))
+    return GeoResult(projector=proj, origin=origin, gps_residual_m=residual, num_aligned=num)
 
 
 @dataclass

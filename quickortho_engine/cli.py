@@ -42,6 +42,31 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ortho.add_argument("--threads", type=int, default=-1, help="스레드 수 (-1: 전체)")
     p_ortho.add_argument("--keep-work", action="store_true", help="중간 산출물(SfM DB 등) 보존")
 
+    # ── 정밀 보정 ──
+    p_info = sub.add_parser("project-info", help="보정용 프로젝트 정보 (영상 목록, 좌표계, 수정 사항)")
+    p_info.add_argument("ortho_dir", type=Path, help="정사 모자이크 결과 폴더")
+
+    p_tp = sub.add_parser("tiepoints", help="타이포인트 오차 통계 (점별·영상별, 자동 제거 미리보기)")
+    p_tp.add_argument("ortho_dir", type=Path)
+
+    p_pred = sub.add_parser("predict", help="찍은 점 또는 측량 좌표로 다른 사진에서의 위치 예측")
+    p_pred.add_argument("ortho_dir", type=Path)
+    p_pred.add_argument("--spec", required=True, help='JSON: {"marks": [...], "world": {...}, "chips": true}')
+
+    p_gcp = sub.add_parser("gcp-parse", help="GCP 측량 성과 파일(CSV·TXT) 읽기")
+    p_gcp.add_argument("file", type=Path)
+    p_gcp.add_argument("--encoding", default=None)
+    p_gcp.add_argument("--delimiter", default=None, help="',', '\\t', ';', 'whitespace'")
+    p_gcp.add_argument("--ortho", type=Path, default=None, help="좌표계 추정에 쓸 정사 모자이크 결과 폴더")
+
+    p_ed = sub.add_parser("edits-save", help="보정 수정 사항(edits.json) 저장")
+    p_ed.add_argument("ortho_dir", type=Path)
+    p_ed.add_argument("--edits", required=True, help="JSON")
+
+    p_ref = sub.add_parser("refine", help="수정 사항을 적용해 번들 조정 후 정사 모자이크 재생성")
+    p_ref.add_argument("ortho_dir", type=Path)
+    p_ref.add_argument("--reset", action="store_true", help="보정을 취소하고 최초 결과로 되돌림")
+
     sub.add_parser("serve", help="상주 모드: stdin으로 작업 요청(JSON-lines)을 받아 차례로 처리")
     return parser
 
@@ -91,6 +116,25 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
             ),
         )
         out.result("ortho", run_ortho(args.folder, args.output, opts, out))
+    elif args.command in ("project-info", "tiepoints", "predict", "gcp-parse", "edits-save"):
+        from . import marking
+
+        if args.command == "project-info":
+            res = marking.project_info(args.ortho_dir)
+        elif args.command == "tiepoints":
+            res = marking.tiepoint_stats(args.ortho_dir)
+        elif args.command == "predict":
+            res = marking.predict(args.ortho_dir, json.loads(args.spec))
+        elif args.command == "gcp-parse":
+            delim = {"\\t": "\t", "tab": "\t"}.get(args.delimiter, args.delimiter)
+            res = marking.parse_gcp_file(args.file, args.encoding, delim, args.ortho)
+        else:
+            res = marking.save_edits(args.ortho_dir, json.loads(args.edits))
+        out.result(args.command, res)
+    elif args.command == "refine":
+        from .refine import run_refine
+
+        out.result("refine", run_refine(args.ortho_dir, out, reset=args.reset))
     else:
         raise _ArgError(f"지원하지 않는 명령: {args.command}")
 
@@ -108,7 +152,7 @@ def serve(stdin=None, stdout=None) -> int:
     base = Emitter(stdout)
     t0 = __import__("time").perf_counter()
     try:
-        from . import pipeline, preview, sfm  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
+        from . import marking, pipeline, preview, refine, sfm  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
     except Exception as exc:  # 번들 누락 등은 ready에 담아 앱에 알림
         base._emit({"type": "ready", "ok": False, "error": str(exc), "version": __version__})
     else:

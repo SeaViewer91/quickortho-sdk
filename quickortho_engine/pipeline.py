@@ -13,11 +13,14 @@ from pathlib import Path
 
 import numpy as np
 import psutil
+import pycolmap
 import rasterio
+from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
 from . import __version__
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
+from .project import Project
 from .protocol import Emitter
 from .scan import scan_folder
 from .sfm import SfmOptions, run_sfm
@@ -108,43 +111,12 @@ def run_ortho(folder: Path, out_dir: Path, opts: OrthoOptions, out: Emitter) -> 
         out.log(f"좌표계 EPSG:{geo.projector.epsg}, GPS 잔차(RMS, 수평) {geo.gps_residual_m:.2f} m")
         timings["georef_s"] = time.perf_counter() - t0
 
-        # 3) 간이 DSM
-        t0 = time.perf_counter()
-        out.stage("dsm", "희소 점군으로 간이 DSM 생성")
-        pts = remove_z_outliers(sparse_points(rec))
-        if len(pts) < 10:
-            raise RuntimeError("DSM 생성 실패: 유효한 3D 점이 너무 적음")
-        ground_z = float(np.median(pts[:, 2]))
-        views = build_views(rec, ground_z)
-        src_gsd = native_gsd(views, ground_z)
-        gsd = opts.gsd_m or src_gsd * opts.gsd_scale
-        vb = np.array([v.bbox for v in views])
-        bounds = _snap_bounds((vb[:, 0].min(), vb[:, 1].min(), vb[:, 2].max(), vb[:, 3].max()), gsd)
-        area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
-        dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
-        dsm = build_dsm(pts, bounds, dsm_res)
-        _write_dsm(dsm, out_dir / "dsm.tif", geo.projector.crs)
-        timings["dsm_s"] = time.perf_counter() - t0
+        # 보정용 프로젝트 저장 (지역 좌표계)
+        Project(out_dir).save_base(rec, geo.projector.epsg, geo.origin)
+        Project(out_dir).save_meta(folder, gps, __version__, render={"gsd_m": opts.gsd_m, "gsd_scale": opts.gsd_scale})
 
-        # 4) 정사투영
-        t0 = time.perf_counter()
-        out.stage("ortho", f"정사 모자이크 생성 (GSD {gsd * 100:.1f} cm)")
-        tmp = out_dir / "orthomosaic.tmp.tif"
-        ortho_stats = render_orthomosaic(
-            views, dsm, folder, tmp, geo.projector.crs, gsd, src_gsd, bounds, out,
-            cache_budget_mb=opts.cache_budget_mb,
-        )
-        timings["ortho_s"] = time.perf_counter() - t0
-
-        # 5) COG 변환과 미리보기
-        t0 = time.perf_counter()
-        out.stage("finalize", "COG 변환·미리보기 생성")
-        final = out_dir / "orthomosaic.tif"
-        finalize_cog(tmp, final)
-        tmp.unlink(missing_ok=True)
-        _write_preview(final, out_dir / "preview.png")
-        corners = _corners_lonlat(final)
-        timings["finalize_s"] = time.perf_counter() - t0
+        # 3~5) 간이 DSM → 정사투영 → COG
+        products = render_products(rec, folder, out_dir, geo.projector.epsg, opts, out, timings)
 
         if not opts.keep_work:
             shutil.rmtree(work, ignore_errors=True)
@@ -166,6 +138,65 @@ def run_ortho(folder: Path, out_dir: Path, opts: OrthoOptions, out: Emitter) -> 
             "num_aligned": geo.num_aligned,
             "note": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요",
         },
+        **products,
+        "timings_s": {k: round(v, 2) for k, v in timings.items()},
+        "peak_memory_mb": round(mem.peak / 1024 / 1024, 1),
+        "warnings": warnings,
+    }
+    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    Project(out_dir).save_base_report(report)
+    return report
+
+
+def render_products(
+    rec: pycolmap.Reconstruction,
+    image_dir: Path,
+    out_dir: Path,
+    epsg: int,
+    opts: OrthoOptions,
+    out: Emitter,
+    timings: dict[str, float],
+) -> dict:
+    """투영 좌표(절대값) 재구성으로 간이 DSM, 정사 모자이크(COG), 미리보기를 만든다.
+
+    반환: 보고서의 dsm, ortho, outputs, preview_corners_lonlat 항목.
+    """
+    crs = CRS.from_epsg(epsg)
+    t0 = time.perf_counter()
+    out.stage("dsm", "희소 점군으로 간이 DSM 생성")
+    pts = remove_z_outliers(sparse_points(rec))
+    if len(pts) < 10:
+        raise RuntimeError("DSM 생성 실패: 유효한 3D 점이 너무 적음")
+    ground_z = float(np.median(pts[:, 2]))
+    views = build_views(rec, ground_z)
+    src_gsd = native_gsd(views, ground_z)
+    gsd = opts.gsd_m or src_gsd * opts.gsd_scale
+    vb = np.array([v.bbox for v in views])
+    bounds = _snap_bounds((vb[:, 0].min(), vb[:, 1].min(), vb[:, 2].max(), vb[:, 3].max()), gsd)
+    area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+    dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
+    dsm = build_dsm(pts, bounds, dsm_res)
+    _write_dsm(dsm, out_dir / "dsm.tif", crs)
+    timings["dsm_s"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    out.stage("ortho", f"정사 모자이크 생성 (GSD {gsd * 100:.1f} cm)")
+    tmp = out_dir / "orthomosaic.tmp.tif"
+    ortho_stats = render_orthomosaic(
+        views, dsm, image_dir, tmp, crs, gsd, src_gsd, bounds, out,
+        cache_budget_mb=opts.cache_budget_mb,
+    )
+    timings["ortho_s"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    out.stage("finalize", "COG 변환·미리보기 생성")
+    final = out_dir / "orthomosaic.tif"
+    finalize_cog(tmp, final)
+    tmp.unlink(missing_ok=True)
+    _write_preview(final, out_dir / "preview.png")
+    corners = _corners_lonlat(final)
+    timings["finalize_s"] = time.perf_counter() - t0
+    return {
         "dsm": {"resolution_m": dsm_res, "num_points": dsm.num_points},
         "ortho": {**ortho_stats, "source_gsd_m": src_gsd},
         "outputs": {
@@ -174,12 +205,7 @@ def run_ortho(folder: Path, out_dir: Path, opts: OrthoOptions, out: Emitter) -> 
             "preview": str(out_dir / "preview.png"),
         },
         "preview_corners_lonlat": corners,
-        "timings_s": {k: round(v, 2) for k, v in timings.items()},
-        "peak_memory_mb": round(mem.peak / 1024 / 1024, 1),
-        "warnings": warnings,
     }
-    (out_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report
 
 
 def _alt(im: dict) -> float:

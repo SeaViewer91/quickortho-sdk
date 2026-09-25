@@ -43,6 +43,14 @@ python -m quickortho_engine version
 python -m quickortho_engine scan <영상 폴더> [--recursive]
 python -m quickortho_engine preview <영상 폴더> -o <결과 폴더> [--max-size 2048]
 python -m quickortho_engine ortho <영상 폴더> -o <결과 폴더> [옵션]
+
+# 정밀 보정 (<결과 폴더>는 ortho 결과 폴더)
+python -m quickortho_engine project-info <결과 폴더>
+python -m quickortho_engine tiepoints <결과 폴더>
+python -m quickortho_engine predict <결과 폴더> --spec '{"marks": [...], "world": {...}, "chips": true}'
+python -m quickortho_engine gcp-parse <측량 성과 파일> [--ortho <결과 폴더>] [--encoding cp949] [--delimiter ,]
+python -m quickortho_engine edits-save <결과 폴더> --edits '<JSON>'
+python -m quickortho_engine refine <결과 폴더> [--reset]
 ```
 
 - `scan`: 폴더 내 JPG의 EXIF·DJI XMP를 읽어 위치·고도·짐벌 자세·카메라 정보를 수집하고,
@@ -76,6 +84,36 @@ python -m quickortho_engine ortho <영상 폴더> -o <결과 폴더> [옵션]
 | `--max-features` | 4096 | 영상당 최대 특징점 수 |
 | `--threads` | -1 | 스레드 수 (-1은 전체 코어) |
 | `--keep-work` | 끔 | 중간 산출물(SfM DB 등) 보존 |
+
+### 정밀 보정
+
+`ortho`는 결과 폴더의 `project/`에 GPS 정렬 직후의 정합 결과(base, 지역 좌표계)를 저장함.
+`refine`은 항상 base에서 시작해 `edits.json`을 처음부터 적용하므로 여러 번 실행해도 결과가 누적되지 않음.
+
+1. 사용자가 삭제한 3D 점 제거, 재투영 오차가 기준보다 큰 관측 제거
+2. 수동 타이포인트(사진 2장 이상 표시)를 삼각측량해 추가
+3. 좌표 기준
+   - 기준점 GCP 3점 이상: 삼각측량한 GCP와 측량 좌표로 닮음변환(Umeyama)을 구해 GCP 좌표계로 옮긴 뒤, GCP를 고정점으로 번들 조정함.
+     기준점 4점 이상이고 GCP 높이 차가 촬영고도의 2% 이상이면 초점거리·왜곡도 조정함 (평탄지에서는 초점거리-고도 상관으로 높이가 흔들리므로 고정)
+   - 1~2점: 번들 조정 → GPS 정렬 → GCP 평균 차이만큼 평행 이동
+   - 0점: 번들 조정(카메라 내부표정 고정) → GPS 정렬
+4. 검사점 오차 계산, DSM·정사 모자이크 재생성, `report.json`에 `refine` 항목 추가
+
+| 명령 | 내용 |
+|---|---|
+| `project-info` | 영상 목록, 현재 좌표계, 수정 사항, GCP 경위도 |
+| `tiepoints` | 점별·영상별 재투영 오차, 오차 분포, 자동 제거 기준별 제거량 미리보기, 권장 기준 |
+| `predict` | 표시한 점(2장 이상: 삼각측량, 1장: DSM 교차) 또는 측량 좌표로 다른 사진에서의 위치 예측, 사진 조각(원본 해상도 512 px) 생성 |
+| `gcp-parse` | CSV·TXT 읽기 (UTF-8/CP949, 쉼표·탭·세미콜론·공백 자동 판단), 열 추정, 촬영 위치와 비교해 좌표계와 X/Y 순서 추정 |
+| `edits-save` | `edits.json` 검증·저장 |
+| `refine` | 보정 실행. `--reset`은 최초 결과로 되돌림 |
+
+검증 (합성 GCP: 정합 결과에 회전 0.5°, 축척 2%, 이동 수 m를 준 좌표를 측량값으로 사용, 표시 오차 0.3 px)
+
+| 데이터 | 기준/검사 | 검사점 RMSE 수평 / 수직 | 재투영 RMSE (자동 제거) | 보정 시간 |
+|---|---|---|---|---|
+| Mavic 2 Pro 13장 | 4 / 2 | 0.025 / 0.017 m | 1.22 → 0.77 px (2 px) | 약 19초 |
+| Aukerman 77장 | 5 / 3 | 0.050 / 0.141 m | 1.59 → 1.33 px (3 px) | 약 96초 |
 
 ### `ortho` 결과물
 
