@@ -55,7 +55,7 @@ def main() -> int:
         print(f"\n완료: {outcome['result'].orthomosaic}")
         return 0
     if outcome.get("cancelled"):
-        print("\n중단됨. 이전 정사 모자이크가 있었다면 그대로 남아 있음")
+        print("\n중단됨. process()는 정렬 단계에서 이전 결과를 지우므로 정사 모자이크가 없을 수 있음")
         return 130
     exc = outcome.get("error")
     print(f"\n실패 [{exc.code}] {exc.message}")

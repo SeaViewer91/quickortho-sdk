@@ -95,6 +95,10 @@ class _ArgError(Exception):
     pass
 
 
+class _RequestError(Exception):
+    pass
+
+
 class _Parser(argparse.ArgumentParser):
     """serve 모드에서 잘못된 요청이 프로세스를 종료시키지 않도록 예외로 바꾼다."""
 
@@ -154,7 +158,9 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
     elif cmd == "tiepoints":
         out.result(cmd, qo.Project.open(args.ortho_dir).tiepoint_stats())
     elif cmd == "predict":
-        out.result(cmd, marking.predict(args.ortho_dir, json.loads(args.spec)))
+        spec = json.loads(args.spec)
+        out.result(cmd, qo.Project.open(args.ortho_dir).predict(
+            spec.get("marks", []), spec.get("world"), chips=bool(spec.get("chips"))))
     elif cmd == "gcp-parse":
         out.result(cmd, qo.read_gcp_file(args.file, args.encoding, args.delimiter, args.ortho))
     elif cmd == "edits-save":
@@ -177,6 +183,8 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
 def _report_error(out: Emitter, exc: BaseException) -> None:
     if isinstance(exc, _ArgError):
         out.error(f"잘못된 인자: {exc}", "", code="invalid_argument")
+    elif isinstance(exc, _RequestError):
+        out.error(str(exc), "", code="invalid_request")
     elif isinstance(exc, QuickOrthoError):
         out.error(exc.message, traceback.format_exc(), code=exc.code)
     else:
@@ -211,10 +219,14 @@ def serve(stdin=None, stdout=None) -> int:
             continue
         job = None
         try:
-            req = json.loads(line)
-            job = int(req["job"])
+            try:
+                req = json.loads(line)
+                job = int(req["job"])
+                argv = [str(a) for a in req["argv"]]
+            except (ValueError, KeyError, TypeError) as exc:
+                raise _RequestError(f"잘못된 요청 형식 (필요: {{\"job\": 정수, \"argv\": [...]}}): {exc}") from exc
             out = Emitter(stdout, job=job)
-            args = parser.parse_args([str(a) for a in req["argv"]])
+            args = parser.parse_args(argv)
             if args.command == "serve":
                 raise _ArgError("serve 안에서 serve를 실행할 수 없음")
             _dispatch(args, out)

@@ -92,6 +92,9 @@ def test_align_only_then_render(scene, tmp_path):
     a = p.align(qo.OrthoOptions(sfm=FAST_SFM))
     assert a.num_registered == 12 and a.epsg == 32652
     assert p.is_aligned and not p.is_rendered and p.result() is None
+    with pytest.raises(qo.ProjectError) as ei:
+        p.predict(world={"x": 500000.0, "y": 3884000.0, "z": 0.0, "epsg": 32652})
+    assert ei.value.code == "not_rendered"
     r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4.0))
     assert p.is_rendered and r.width > 0
 
@@ -122,6 +125,33 @@ def test_cancel_during_render_keeps_previous_result(workspace):
     assert (_sha(workspace / "orthomosaic.tif"), _sha(workspace / "dsm.tif")) == before
     assert not list(workspace.glob("*.tmp.tif"))
     assert p.is_rendered
+
+
+def test_cancel_at_finalize_keeps_previous_result(workspace):
+    p = qo.Project.open(workspace)
+    before = _sha(workspace / "orthomosaic.tif")
+    tok = qo.CancelToken()
+
+    def on_event(ev: qo.Event) -> None:
+        if ev.type == "stage" and ev.stage == "finalize":
+            tok.cancel()  # COG 변환이 끝난 뒤, 결과 교체 전에 Cancelled
+
+    with pytest.raises(qo.Cancelled):
+        p.orthomosaic(qo.OrthoOptions(gsd_scale=3.0), on_event=on_event, cancel=tok)
+    assert _sha(workspace / "orthomosaic.tif") == before
+    assert not list(workspace.glob("*.tmp.tif"))
+
+
+def test_image_dir_missing(workspace, tmp_path):
+    meta_p = workspace / "project" / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["image_dir"] = str(tmp_path / "옮겨진폴더")
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+    p = qo.Project.open(workspace)
+    for fn in (p.orthomosaic, p.refine, p.reset_refinement):
+        with pytest.raises(qo.InputError) as ei:
+            fn()
+        assert ei.value.code == "image_dir_missing"
 
 
 # ───────────────────────── 정밀 보정 ─────────────────────────
@@ -279,6 +309,7 @@ def test_serve_protocol(tmp_path):
         json.dumps({"job": 1, "argv": ["version"]}),
         json.dumps({"job": 2, "argv": ["nope"]}),
         json.dumps({"job": 3, "argv": ["scan", str(tmp_path / "없음")]}),
+        "이건 JSON이 아님",
     ]) + "\n"
     out = io.StringIO()
     assert serve(io.StringIO(req), out) == 0
@@ -290,4 +321,6 @@ def test_serve_protocol(tmp_path):
     assert err2["code"] == "invalid_argument"
     err3 = [e for e in ev if e.get("job") == 3 and e["type"] == "error"][0]
     assert err3["code"] == "folder_not_found"
-    assert [e["code"] for e in ev if e["type"] == "done"] == [0, 1, 1]
+    bad = [e for e in ev if e["type"] == "error" and e.get("job") is None][0]
+    assert bad["code"] == "invalid_request"
+    assert [e["code"] for e in ev if e["type"] == "done"] == [0, 1, 1, 1]

@@ -25,6 +25,7 @@ import numpy as np
 import pycolmap
 
 from .._version import __version__
+from ..errors import InputError
 from .geo import Projector, crs_info, is_geographic, transform_xy
 from .project import Frame, Project, to_absolute
 from .protocol import Emitter
@@ -473,12 +474,17 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
         "epsg": frame.epsg,
         "mode": mode,
         **({"gps_residual_rms_m": info["gps_residual_rms_m"]} if "gps_residual_rms_m" in info else {}),
+        **({"num_aligned": info["num_aligned"]} if "num_aligned" in info else {}),
         "note": {
             "gcp": "GCP로 보정함. 정확도는 검사점 오차로 판단함",
             "gcp_shift": "GCP 3점 미만이라 평행 이동만 보정함",
             "gps": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요",
         }[mode],
     }
+    if mode == "gcp":
+        # GCP 기준으로 옮겼으므로 정렬 때의 GPS 잔차는 더 이상 결과를 설명하지 않음
+        georef.pop("gps_residual_rms_m", None)
+        georef.pop("num_aligned", None)
     refine_block = {
         **info,
         "before": before,

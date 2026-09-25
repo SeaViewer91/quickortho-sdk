@@ -96,8 +96,9 @@ def preview(
     """
     opts = options or PreviewOptions()
     out = _start(on_event, cancel)
-    res = run_preview(_images_dir(folder), Path(output), out, max_size=opts.max_size, quicklook=opts.quicklook)
-    return PreviewResult.from_dict(res, Path(output))
+    output = Path(output).expanduser().resolve()
+    res = run_preview(_images_dir(folder), output, out, max_size=opts.max_size, quicklook=opts.quicklook)
+    return PreviewResult.from_dict(res, output)
 
 
 def process(
@@ -109,6 +110,8 @@ def process(
     cancel: CancelToken | None = None,
 ) -> OrthoResult:
     """영상 폴더로 정사 모자이크를 한 번에 만듦. ``Project.create(images, workspace).process(...)``와 같음."""
+    if cancel is not None:
+        cancel.raise_if_cancelled()
     return Project.create(images, workspace).process(options, on_event=on_event, cancel=cancel)
 
 
@@ -360,7 +363,16 @@ class Project:
         Returns:
             ``method``(``"triangulated"``·``"survey"``·``"survey_dsm"``·``"dsm"``·``None``), ``point``(좌표),
             ``residuals_px``, ``candidates``(사진·x·y, 중심에 가까운 순) dict.
+            위치를 구하지 못하면 ``{"method": None, "candidates": []}``만 돌려줌.
+
+        Raises:
+            ProjectError: 정렬 결과가 없음(``not_aligned``), DSM이 없음(``not_rendered``, 정렬만 하고 정사 모자이크를 만들지 않음).
         """
+        self._store.require()
+        if not (self.workspace / "dsm.tif").exists():
+            raise ProjectError(
+                "DSM(dsm.tif)이 없음. orthomosaic() 또는 process()를 먼저 실행해야 함", "not_rendered"
+            )
         spec = {"marks": [m.to_dict() if isinstance(m, Mark) else dict(m) for m in marks], "world": world,
                 "chips": chips}
         return marking.predict(self.workspace, spec)

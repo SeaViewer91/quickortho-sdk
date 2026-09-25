@@ -253,6 +253,7 @@ def render_products(
     area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
     dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
     dsm = build_dsm(pts, bounds, dsm_res)
+    out.progress("dsm", 1, 1)  # 중단 확인 지점
     # 결과물은 임시 파일에 쓰고 마지막에 교체한다. 중단·실패 시 이전 결과물이 섞이지 않게 하기 위해서다.
     dsm_tmp = out_dir / "dsm.tmp.tif"
     tmp = out_dir / "orthomosaic.tmp.tif"
@@ -273,6 +274,7 @@ def render_products(
         t0 = time.perf_counter()
         out.stage("finalize", "COG 변환·미리보기 생성")
         finalize_cog(tmp, cog_tmp)
+        out.progress("finalize", 1, 1)  # 중단 확인 지점 (결과물 교체 전)
         os.replace(cog_tmp, final)
         os.replace(dsm_tmp, out_dir / "dsm.tif")
     finally:

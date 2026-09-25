@@ -111,7 +111,7 @@ def read_gcp_file(
 
     Args:
         path: 측량 성과 파일.
-        encoding: 문자 인코딩. ``None``이면 UTF-8(BOM 포함) → CP949 순으로 시도함.
+        encoding: 문자 인코딩. ``None``이면 UTF-8(BOM 포함) → CP949 → Latin-1 순으로 시도함.
         delimiter: 구분자 (``","``, ``"\\t"``, ``";"``, ``"whitespace"``). ``None``이면 자동 판단함.
         workspace: 정렬을 마친 워크스페이스. 주면 촬영 위치와 비교해 좌표계(EPSG)와 X/Y 순서를 추정함.
 
@@ -124,7 +124,8 @@ def read_gcp_file(
     """
     if delimiter in ("\\t", "tab"):
         delimiter = "\t"
-    return marking.parse_gcp_file(Path(path), encoding, delimiter, Path(workspace) if workspace else None)
+    ws = Path(workspace).expanduser() if workspace else None
+    return marking.parse_gcp_file(Path(path).expanduser(), encoding, delimiter, ws)
 
 
 def load_gcps(
@@ -167,7 +168,7 @@ def load_gcps(
     # 전체 행 다시 읽기 (미리보기는 500행으로 잘림)
     rows = parsed["rows"]
     if parsed["num_rows"] > len(rows):
-        text, _ = marking._decode(Path(path).read_bytes(), parsed["encoding"])
+        text, _ = marking._decode(Path(path).expanduser().read_bytes(), parsed["encoding"])
         lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
         rows = marking._split(lines, parsed["delimiter"])
         if parsed["header"] is not None:
