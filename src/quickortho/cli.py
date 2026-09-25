@@ -9,9 +9,9 @@ import sys
 import traceback
 from pathlib import Path
 
-from . import __version__
-from .protocol import Emitter
-from .scan import scan_folder
+from ._version import __version__
+from ._core.protocol import Emitter
+from ._core.scan import scan_folder
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -96,14 +96,14 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
     elif args.command == "scan":
         out.result("scan", scan_folder(args.folder, recursive=args.recursive, emitter=out))
     elif args.command == "preview":
-        from .preview import run_preview
+        from ._core.preview import run_preview
 
         res = run_preview(args.folder, args.output, out, max_size=args.max_size, quicklook=not args.skip_quicklook)
         out.result("preview", res)
     elif args.command == "ortho":
         # 무거운 의존성(pycolmap, rasterio 등)은 ortho 명령에서만 불러옴
-        from .pipeline import OrthoOptions, run_ortho
-        from .sfm import SfmOptions
+        from ._core.pipeline import OrthoOptions, run_ortho
+        from ._core.sfm import SfmOptions
 
         opts = OrthoOptions(
             gsd_m=args.gsd,
@@ -117,7 +117,7 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
         )
         out.result("ortho", run_ortho(args.folder, args.output, opts, out))
     elif args.command in ("project-info", "tiepoints", "predict", "gcp-parse", "edits-save"):
-        from . import marking
+        from ._core import marking
 
         if args.command == "project-info":
             res = marking.project_info(args.ortho_dir)
@@ -132,7 +132,7 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
             res = marking.save_edits(args.ortho_dir, json.loads(args.edits))
         out.result(args.command, res)
     elif args.command == "refine":
-        from .refine import run_refine
+        from ._core.refine import run_refine
 
         out.result("refine", run_refine(args.ortho_dir, out, reset=args.reset))
     else:
@@ -152,7 +152,7 @@ def serve(stdin=None, stdout=None) -> int:
     base = Emitter(stdout)
     t0 = __import__("time").perf_counter()
     try:
-        from . import marking, pipeline, preview, refine, sfm  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
+        from ._core import marking, pipeline, preview, refine, sfm  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
     except Exception as exc:  # 번들 누락 등은 ready에 담아 앱에 알림
         base._emit({"type": "ready", "ok": False, "error": str(exc), "version": __version__})
     else:

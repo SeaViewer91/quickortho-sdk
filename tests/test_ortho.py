@@ -9,10 +9,10 @@ import rasterio
 from PIL import Image
 from pyproj import CRS
 
-from quickortho_engine.geo import UtmProjector, utm_epsg
-from quickortho_engine.ortho import View, make_view, render_orthomosaic, _footprint
-from quickortho_engine.protocol import Emitter
-from quickortho_engine.surface import Dsm, build_dsm, remove_z_outliers
+from quickortho._core.geo import UtmProjector, utm_epsg
+from quickortho._core.ortho import View, make_view, render_orthomosaic, _footprint
+from quickortho._core.protocol import Emitter
+from quickortho._core.surface import Dsm, build_dsm, remove_z_outliers
 
 
 def test_utm_epsg():

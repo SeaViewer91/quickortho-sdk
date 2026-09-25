@@ -1,20 +1,36 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quickortho-engine"
-version = "0.2.0"
-description = "QuickOrtho 처리 엔진 사이드카 (스캔, 미리보기, SfM, 정사투영)"
+name = "quickortho-sdk"
+dynamic = ["version"]
+description = "드론 영상으로 정사 모자이크(GeoTIFF)를 만드는 Python SDK (SfM, 간이 DSM, 정사투영, GCP 보정)"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Suho Bak" }]
 requires-python = ">=3.10"
+keywords = ["drone", "orthomosaic", "photogrammetry", "sfm", "colmap", "geotiff", "uav"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: Korean",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
 dependencies = [
     "pillow>=10",
     "numpy>=1.26",
     "scipy>=1.11",
     "opencv-python-headless>=4.9,<5",
-    "pycolmap>=4.0",
+    "pycolmap>=4.0,<5",
     "rasterio>=1.4",
     "pyproj>=3.6",
     "psutil>=5.9",
@@ -22,10 +38,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "build>=1.2"]
+
+[project.urls]
+Homepage = "https://github.com/SeaViewer91/quickortho-sdk"
+Documentation = "https://github.com/SeaViewer91/quickortho-sdk/tree/main/docs"
+Issues = "https://github.com/SeaViewer91/quickortho-sdk/issues"
 
 [project.scripts]
-quickortho-engine = "quickortho_engine.cli:main"
+quickortho = "quickortho.cli:main"
+quickortho-engine = "quickortho.cli:main"  # 데스크톱 앱 호환용 별칭
+
+[tool.setuptools.dynamic]
+version = { attr = "quickortho._version.__version__" }
 
 [tool.setuptools.packages.find]
-include = ["quickortho_engine*"]
+where = ["src"]
+include = ["quickortho*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

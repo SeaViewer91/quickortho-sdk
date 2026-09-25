@@ -18,7 +18,7 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
-from . import __version__
+from .._version import __version__
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
 from .project import Project
 from .protocol import Emitter

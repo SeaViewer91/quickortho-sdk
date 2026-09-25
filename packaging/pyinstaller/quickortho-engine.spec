@@ -9,7 +9,7 @@ for pkg in ("pycolmap", "rasterio", "pyproj", "shapely"):
     datas += d
     binaries += b
     hiddenimports += h
-hiddenimports += collect_submodules("quickortho_engine")
+hiddenimports += collect_submodules("quickortho")
 
 a = Analysis(
     ["run_engine.py"],

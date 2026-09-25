@@ -2,7 +2,7 @@
 
 import multiprocessing
 
-from quickortho_engine.cli import main
+from quickortho.cli import main
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # Windows에서 동결 실행 시 필요

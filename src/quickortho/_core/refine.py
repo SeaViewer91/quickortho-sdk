@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 import pycolmap
 
-from . import __version__
+from .._version import __version__
 from .geo import Projector, crs_info, is_geographic, transform_xy
 from .project import Frame, Project, to_absolute
 from .protocol import Emitter

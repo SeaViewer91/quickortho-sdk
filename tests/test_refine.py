@@ -6,8 +6,8 @@ import numpy as np
 import pycolmap
 import pytest
 
-from quickortho_engine.marking import _guess_columns, parse_gcp_file
-from quickortho_engine.refine import (
+from quickortho._core.marking import _guess_columns, parse_gcp_file
+from quickortho._core.refine import (
     add_point,
     apply_sim3,
     bundle_adjust,

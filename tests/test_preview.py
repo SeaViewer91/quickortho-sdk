@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from shapely.geometry import box
 
-from quickortho_engine.preview import (
+from quickortho._core.preview import (
     Pose,
     analyze_coverage,
     camera_axes,
@@ -16,7 +16,7 @@ from quickortho_engine.preview import (
     gimbal_yaw_offset,
     run_preview,
 )
-from quickortho_engine.protocol import Emitter
+from quickortho._core.protocol import Emitter
 
 from test_scan import _xmp, make_jpeg
 

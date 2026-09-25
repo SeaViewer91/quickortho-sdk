@@ -4,8 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from quickortho_engine.cli import main
-from quickortho_engine.scan import scan_folder, select_mapping_cameras, read_image
+from quickortho.cli import main
+from quickortho._core.scan import scan_folder, select_mapping_cameras, read_image
 
 
 def _xmp(**attrs: str) -> bytes:
@@ -104,7 +104,7 @@ def test_cli_error_event(tmp_path: Path, capsys):
 def test_serve_mode_handles_jobs_and_errors(tmp_path: Path):
     import io as _io
 
-    from quickortho_engine.cli import serve
+    from quickortho.cli import serve
 
     make_jpeg(tmp_path / "a.jpg", model="FC6310S", focal=8.8, focal35=24)
     reqs = "\n".join([
