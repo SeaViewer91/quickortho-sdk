@@ -25,6 +25,7 @@ from pyproj import Transformer
 from shapely.geometry import Polygon, mapping
 from shapely.ops import unary_union
 
+from ..errors import InputError
 from .geo import UtmProjector
 from .protocol import Emitter
 from .scan import scan_folder
@@ -380,7 +381,7 @@ def run_preview(
     scan = scan_folder(folder, emitter=out)
     images = [r for r in scan["images"] if r["selected"] and r["lat"] is not None and r["lon"] is not None]
     if not images:
-        raise RuntimeError("GPS 정보가 있는 영상이 없어 미리보기를 만들 수 없음")
+        raise InputError("GPS 정보가 있는 영상이 없어 미리보기를 만들 수 없음", "no_gps")
 
     out.stage("footprints", "촬영 범위 계산")
     proj = UtmProjector(float(np.median([r["lon"] for r in images])), float(np.median([r["lat"] for r in images])))

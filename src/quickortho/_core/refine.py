@@ -304,7 +304,8 @@ def gcp_table(rec: pycolmap.Reconstruction, gcps: list[dict], frame: Frame) -> t
 
 
 def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
-    from .pipeline import OrthoOptions, PeakMemory, render_products
+    from ..options import OrthoOptions
+    from .pipeline import PeakMemory, compose_report, render_products
 
     t_start = time.perf_counter()
     proj = Project(ortho_dir)
@@ -312,10 +313,10 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
     meta = proj.meta()
     image_dir = Path(meta["image_dir"])
     if not image_dir.is_dir():
-        raise RuntimeError(f"원본 영상 폴더를 찾을 수 없음: {image_dir}")
+        raise InputError(f"원본 영상 폴더를 찾을 수 없음: {image_dir}", "image_dir_missing")
     gps = {k: tuple(v) for k, v in meta["gps"].items()}
     edits = proj.load_edits()
-    base_report = proj.base_report()
+    base_report = proj.align_report()
     timings: dict[str, float] = {}
     warnings: list[str] = []
 
@@ -453,27 +454,32 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                 out.log(f"{label} {s_['count']}점 RMSE 수평 {s_['rmse_xy']:.3f} m, 수직 {s_['rmse_z']:.3f} m")
 
         # 6) 정사 모자이크 재생성
-        render = meta.get("render", {})
-        opts = OrthoOptions(gsd_m=render.get("gsd_m"), gsd_scale=render.get("gsd_scale", 2.0))
+        render = meta.get("render") or {}
+        opts = OrthoOptions(
+            gsd_m=render.get("gsd_m"),
+            gsd_scale=render.get("gsd_scale", 2.0),
+            cache_budget_mb=render.get("cache_budget_mb", 600),
+        )
         products = render_products(to_absolute(rec, frame), image_dir, proj.ortho_dir, frame.epsg, opts, out, timings)
 
     timings["total_s"] = time.perf_counter() - t_start
-    report = dict(base_report)
-    report.update(products)
-    report["engine_version"] = __version__
-    if mode != "base":
-        report["georef"] = {
-            **{k: v for k, v in base_report.get("georef", {}).items() if k != "note"},
-            "epsg": frame.epsg,
-            "mode": mode,
-            **({"gps_residual_rms_m": info["gps_residual_rms_m"]} if "gps_residual_rms_m" in info else {}),
-            "note": {
-                "gcp": "GCP로 보정함. 정확도는 검사점 오차로 판단함",
-                "gcp_shift": "GCP 3점 미만이라 평행 이동만 보정함",
-                "gps": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요",
-            }[mode],
-        }
-    report["refine"] = {
+    render_t = {k: timings[k] for k in ("dsm_s", "ortho_s", "finalize_s") if k in timings}
+    render_t["render_total_s"] = sum(render_t.values())
+    if mode == "base":
+        # 보정 취소: 보정 보고서를 지우고 정렬 결과로 다시 만든 정사 모자이크만 보고한다
+        return compose_report(proj, products, render_t, mem.peak)
+    georef = {
+        **{k: v for k, v in base_report.get("georef", {}).items() if k != "note"},
+        "epsg": frame.epsg,
+        "mode": mode,
+        **({"gps_residual_rms_m": info["gps_residual_rms_m"]} if "gps_residual_rms_m" in info else {}),
+        "note": {
+            "gcp": "GCP로 보정함. 정확도는 검사점 오차로 판단함",
+            "gcp_shift": "GCP 3점 미만이라 평행 이동만 보정함",
+            "gps": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요",
+        }[mode],
+    }
+    refine_block = {
         **info,
         "before": before,
         "after": after,
@@ -483,8 +489,5 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
         "peak_memory_mb": round(mem.peak / 1024 / 1024, 1),
         "warnings": warnings,
     }
-    if mode == "base":
-        report.pop("refine")
-    report["warnings"] = list(base_report.get("warnings", [])) + warnings
-    (proj.ortho_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    return report
+    proj.save_refine_report({"georef": georef, "refine": refine_block, "warnings": warnings})
+    return compose_report(proj, products, render_t, mem.peak)

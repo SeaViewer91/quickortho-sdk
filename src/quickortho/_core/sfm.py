@@ -10,26 +10,16 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 import pycolmap
 
+from ..errors import AlignmentError
+from ..options import SfmOptions
 from .protocol import Emitter
 
 pycolmap.logging.minloglevel = 2  # COLMAP 내부 INFO 로그 억제 (stdout은 JSON-lines 전용)
-
-
-@dataclass
-class SfmOptions:
-    max_image_size: int = 2000
-    max_num_features: int = 4096
-    num_threads: int = -1
-    num_neighbors: int = 15
-    max_neighbor_distance_m: float = 500.0
-    exhaustive_below: int = 40  # 이 장수 이하이거나 GPS가 없으면 전수 매칭
-    min_registered_ratio: float = 0.8  # 전역 매핑 정합률이 이보다 낮으면 증분 매핑 재시도
 
 
 class _RowCounter:
@@ -75,13 +65,20 @@ def _run_with_progress(
     th = threading.Thread(target=target, daemon=True)
     th.start()
     last = -1
-    while th.is_alive():
-        th.join(1.0)
-        n = poll()
-        if n is not None and n != last:
-            out.progress(stage, min(n, total), total)
-            last = n
-    poll.close()
+    try:
+        while th.is_alive():
+            th.join(1.0)
+            n = poll()
+            if n is not None and n != last:
+                out.progress(stage, min(n, total), total)
+                last = n
+    except BaseException:
+        # 중단 요청(Cancelled) 등으로 빠져나갈 때: COLMAP 호출은 중간에 끊을 수 없으므로 끝날 때까지 기다린 뒤
+        # 예외를 올린다. 기다리지 않으면 작업 폴더를 지우는 동안 COLMAP이 DB에 계속 쓰게 된다.
+        th.join()
+        raise
+    finally:
+        poll.close()
     if error:
         raise error[0]
     out.progress(stage, total, total)
@@ -183,7 +180,7 @@ def run_sfm(
             stats["mapper"] = "incremental"
     stats["time_mapping_s"] = time.perf_counter() - t0
     if best is None or best.num_reg_images() < 3:
-        raise RuntimeError("SfM 실패: 정합된 영상이 3장 미만임 (중복도·초점 상태 확인 필요)")
+        raise AlignmentError("SfM 실패: 정합된 영상이 3장 미만임 (중복도·초점 상태 확인 필요)", "sfm_failed")
 
     stats["num_registered"] = best.num_reg_images()
     stats["num_points3D"] = best.num_points3D()

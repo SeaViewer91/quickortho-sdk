@@ -58,3 +58,6 @@ include = ["quickortho*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:Use `@` matmul:PendingDeprecationWarning",
+]

@@ -15,6 +15,7 @@ import numpy as np
 import pycolmap
 import rasterio
 
+from ..errors import InputError
 from .geo import crs_info, transform_xy
 from .project import EDITS_VERSION, Frame, Project
 from .refine import observation_errors, project, resolve_marks, triangulate
@@ -381,7 +382,7 @@ def parse_gcp_file(
     text, enc = _decode(data, encoding)
     lines = [ln for ln in text.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
     if not lines:
-        raise RuntimeError("파일에 내용이 없음")
+        raise InputError("파일에 내용이 없음", "empty_file")
     delim = delimiter or _sniff(lines)
     rows = _split(lines, delim)
     ncol = max(len(r) for r in rows)

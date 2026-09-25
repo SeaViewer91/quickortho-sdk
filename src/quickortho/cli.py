@@ -1,4 +1,8 @@
-"""엔진 명령줄 진입점."""
+"""명령줄 진입점 (``quickortho``, ``quickortho-engine``).
+
+모든 명령은 stdout으로 JSON-lines 이벤트를 출력함 (형식은 ``docs/cli.md`` 참고).
+명령은 공개 SDK API를 그대로 호출하므로 CLI 결과와 SDK 결과는 같음.
+"""
 
 from __future__ import annotations
 
@@ -6,19 +10,20 @@ import argparse
 import json
 import platform
 import sys
+import time
 import traceback
 from pathlib import Path
 
+from ._core.protocol import PROTOCOL_VERSION, Emitter
 from ._version import __version__
-from ._core.protocol import Emitter
-from ._core.scan import scan_folder
+from .errors import QuickOrthoError
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="quickortho-engine")
+    parser = _Parser(prog="quickortho", description=f"QuickOrtho SDK {__version__} 명령줄 도구")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("version", help="엔진 버전과 실행 환경 출력")
+    sub.add_parser("version", help="SDK 버전과 실행 환경 출력")
 
     p_scan = sub.add_parser("scan", help="영상 폴더의 EXIF/XMP 스캔")
     p_scan.add_argument("folder", type=Path)
@@ -27,24 +32,39 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prev = sub.add_parser("preview", help="빠른 미리보기 (EXIF 기반 촬영 범위·중복도·간이 모자이크)")
     p_prev.add_argument("folder", type=Path, help="영상 폴더")
     p_prev.add_argument("-o", "--output", type=Path, required=True, help="결과 폴더")
-    p_prev.add_argument("--max-size", type=int, default=2048, help="간이 모자이크 긴 변(px)")
+    p_prev.add_argument("--max-size", type=int, default=2048, help="결과 PNG 긴 변(px)")
     p_prev.add_argument(
         "--skip-quicklook", action="store_true", help="간이 모자이크 없이 촬영 범위·중복도만 계산 (데이터 불러오기)"
     )
 
-    p_ortho = sub.add_parser("ortho", help="정사 모자이크 생성 (fast ortho)")
+    def add_sfm(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--max-image-size", type=int, default=2000, help="특징점 추출용 영상 긴 변(px)")
+        p.add_argument("--max-features", type=int, default=4096, help="영상당 최대 특징점 수")
+        p.add_argument("--threads", type=int, default=-1, help="스레드 수 (-1: 전체)")
+        p.add_argument("--keep-work", action="store_true", help="중간 산출물(SfM DB 등) 보존")
+
+    def add_render(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--gsd", type=float, default=None, help="출력 GSD(m). 기본값은 원본 GSD × --gsd-scale")
+        p.add_argument("--gsd-scale", type=float, default=2.0, help="원본 GSD 대비 출력 배율 (기본 2)")
+
+    p_ortho = sub.add_parser("ortho", help="정사 모자이크 생성 (정렬 + 정사 모자이크)")
     p_ortho.add_argument("folder", type=Path, help="영상 폴더")
-    p_ortho.add_argument("-o", "--output", type=Path, required=True, help="결과 폴더")
-    p_ortho.add_argument("--gsd", type=float, default=None, help="출력 GSD(m). 기본값은 원본 GSD × --gsd-scale")
-    p_ortho.add_argument("--gsd-scale", type=float, default=2.0, help="원본 GSD 대비 출력 배율 (기본 2)")
-    p_ortho.add_argument("--max-image-size", type=int, default=2000, help="특징점 추출용 영상 긴 변(px)")
-    p_ortho.add_argument("--max-features", type=int, default=4096, help="영상당 최대 특징점 수")
-    p_ortho.add_argument("--threads", type=int, default=-1, help="스레드 수 (-1: 전체)")
-    p_ortho.add_argument("--keep-work", action="store_true", help="중간 산출물(SfM DB 등) 보존")
+    p_ortho.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
+    add_render(p_ortho)
+    add_sfm(p_ortho)
+
+    p_align = sub.add_parser("align", help="정렬만 실행 (스캔 → SfM → GPS 좌표 정렬)")
+    p_align.add_argument("folder", type=Path, help="영상 폴더")
+    p_align.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
+    add_sfm(p_align)
+
+    p_render = sub.add_parser("render", help="정렬된 워크스페이스로 정사 모자이크만 다시 생성")
+    p_render.add_argument("ortho_dir", type=Path, help="워크스페이스")
+    add_render(p_render)
 
     # ── 정밀 보정 ──
     p_info = sub.add_parser("project-info", help="보정용 프로젝트 정보 (영상 목록, 좌표계, 수정 사항)")
-    p_info.add_argument("ortho_dir", type=Path, help="정사 모자이크 결과 폴더")
+    p_info.add_argument("ortho_dir", type=Path, help="워크스페이스")
 
     p_tp = sub.add_parser("tiepoints", help="타이포인트 오차 통계 (점별·영상별, 자동 제거 미리보기)")
     p_tp.add_argument("ortho_dir", type=Path)
@@ -57,9 +77,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_gcp.add_argument("file", type=Path)
     p_gcp.add_argument("--encoding", default=None)
     p_gcp.add_argument("--delimiter", default=None, help="',', '\\t', ';', 'whitespace'")
-    p_gcp.add_argument("--ortho", type=Path, default=None, help="좌표계 추정에 쓸 정사 모자이크 결과 폴더")
+    p_gcp.add_argument("--ortho", type=Path, default=None, help="좌표계 추정에 쓸 워크스페이스")
 
-    p_ed = sub.add_parser("edits-save", help="보정 수정 사항(edits.json) 저장")
+    p_ed = sub.add_parser("edits-save", help="보정 수정 사항(edits.json) 저장 (전체 교체)")
     p_ed.add_argument("ortho_dir", type=Path)
     p_ed.add_argument("--edits", required=True, help="JSON")
 
@@ -82,82 +102,108 @@ class _Parser(argparse.ArgumentParser):
         raise _ArgError(message)
 
 
+def _options(args: argparse.Namespace):
+    from .options import OrthoOptions, SfmOptions
+
+    sfm = SfmOptions(
+        max_image_size=getattr(args, "max_image_size", 2000),
+        max_num_features=getattr(args, "max_features", 4096),
+        num_threads=getattr(args, "threads", -1),
+    )
+    return OrthoOptions(
+        gsd_m=getattr(args, "gsd", None),
+        gsd_scale=getattr(args, "gsd_scale", 2.0),
+        keep_work=getattr(args, "keep_work", False),
+        sfm=sfm,
+    )
+
+
 def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
-    if args.command == "version":
-        out.result(
-            "version",
-            {
-                "engine": __version__,
-                "python": platform.python_version(),
-                "os": platform.system(),
-                "arch": platform.machine(),
-            },
-        )
-    elif args.command == "scan":
-        out.result("scan", scan_folder(args.folder, recursive=args.recursive, emitter=out))
-    elif args.command == "preview":
-        from ._core.preview import run_preview
+    import quickortho as qo
+    from ._core import marking
 
-        res = run_preview(args.folder, args.output, out, max_size=args.max_size, quicklook=not args.skip_quicklook)
-        out.result("preview", res)
-    elif args.command == "ortho":
-        # 무거운 의존성(pycolmap, rasterio 등)은 ortho 명령에서만 불러옴
-        from ._core.pipeline import OrthoOptions, run_ortho
-        from ._core.sfm import SfmOptions
+    def on_event(ev: "qo.Event") -> None:
+        out._emit(ev.to_dict())
 
-        opts = OrthoOptions(
-            gsd_m=args.gsd,
-            gsd_scale=args.gsd_scale,
-            keep_work=args.keep_work,
-            sfm=SfmOptions(
-                max_image_size=args.max_image_size,
-                max_num_features=args.max_features,
-                num_threads=args.threads,
-            ),
-        )
-        out.result("ortho", run_ortho(args.folder, args.output, opts, out))
-    elif args.command in ("project-info", "tiepoints", "predict", "gcp-parse", "edits-save"):
-        from ._core import marking
-
-        if args.command == "project-info":
-            res = marking.project_info(args.ortho_dir)
-        elif args.command == "tiepoints":
-            res = marking.tiepoint_stats(args.ortho_dir)
-        elif args.command == "predict":
-            res = marking.predict(args.ortho_dir, json.loads(args.spec))
-        elif args.command == "gcp-parse":
-            delim = {"\\t": "\t", "tab": "\t"}.get(args.delimiter, args.delimiter)
-            res = marking.parse_gcp_file(args.file, args.encoding, delim, args.ortho)
-        else:
+    cmd = args.command
+    if cmd == "version":
+        out.result("version", {
+            "engine": __version__,
+            "sdk": __version__,
+            "protocol": PROTOCOL_VERSION,
+            "python": platform.python_version(),
+            "os": platform.system(),
+            "arch": platform.machine(),
+        })
+    elif cmd == "scan":
+        out.result("scan", qo.scan(args.folder, recursive=args.recursive, on_event=on_event).raw)
+    elif cmd == "preview":
+        opts = qo.PreviewOptions(max_size=args.max_size, quicklook=not args.skip_quicklook)
+        out.result("preview", qo.preview(args.folder, args.output, opts, on_event=on_event).raw)
+    elif cmd == "ortho":
+        res = qo.Project.create(args.folder, args.output).process(_options(args), on_event=on_event)
+        out.result("ortho", res.report)
+    elif cmd == "align":
+        res = qo.Project.create(args.folder, args.output).align(_options(args), on_event=on_event)
+        out.result("align", res.raw)
+    elif cmd == "render":
+        res = qo.Project.open(args.ortho_dir).orthomosaic(_options(args), on_event=on_event)
+        out.result("render", res.report)
+    elif cmd == "project-info":
+        out.result(cmd, marking.project_info(args.ortho_dir))
+    elif cmd == "tiepoints":
+        out.result(cmd, qo.Project.open(args.ortho_dir).tiepoint_stats())
+    elif cmd == "predict":
+        out.result(cmd, marking.predict(args.ortho_dir, json.loads(args.spec)))
+    elif cmd == "gcp-parse":
+        out.result(cmd, qo.read_gcp_file(args.file, args.encoding, args.delimiter, args.ortho))
+    elif cmd == "edits-save":
+        qo.Project.open(args.ortho_dir)  # 정렬 여부 확인
+        try:
             res = marking.save_edits(args.ortho_dir, json.loads(args.edits))
-        out.result(args.command, res)
-    elif args.command == "refine":
-        from ._core.refine import run_refine
-
-        out.result("refine", run_refine(args.ortho_dir, out, reset=args.reset))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise qo.InputError(f"보정 수정 사항 형식이 잘못됨: {exc}", "invalid_edits") from exc
+        out.result(cmd, res)
+    elif cmd == "refine":
+        proj = qo.Project.open(args.ortho_dir)
+        if args.reset:
+            out.result("refine", proj.reset_refinement(on_event=on_event).report)
+        else:
+            out.result("refine", proj.refine(on_event=on_event).ortho.report)
     else:
-        raise _ArgError(f"지원하지 않는 명령: {args.command}")
+        raise _ArgError(f"지원하지 않는 명령: {cmd}")
+
+
+def _report_error(out: Emitter, exc: BaseException) -> None:
+    if isinstance(exc, _ArgError):
+        out.error(f"잘못된 인자: {exc}", "", code="invalid_argument")
+    elif isinstance(exc, QuickOrthoError):
+        out.error(exc.message, traceback.format_exc(), code=exc.code)
+    else:
+        out.error(str(exc), traceback.format_exc(), code="internal_error")
 
 
 def serve(stdin=None, stdout=None) -> int:
     """상주 모드. 한 줄에 요청 하나: {"job": 1, "argv": ["preview", "<폴더>", "-o", "<결과>"]}
 
-    - 시작 시 무거운 모듈을 미리 불러 두고 {"type": "ready"}를 출력한다.
+    - 시작 시 무거운 모듈을 미리 불러 두고 {"type": "ready", "protocol": 1, ...}을 출력한다.
     - 작업 이벤트에는 "job" 필드가 붙고, 끝나면 {"type": "done", "job": n, "code": 0|1}을 출력한다.
-    - 작업 중단은 앱이 프로세스를 종료하고 새로 띄우는 방식으로 한다.
+    - 작업 중단은 호출 측이 프로세스를 종료하고 새로 띄우는 방식으로 한다.
     - stdin이 닫히면 종료한다.
     """
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     base = Emitter(stdout)
-    t0 = __import__("time").perf_counter()
+    t0 = time.perf_counter()
     try:
-        from ._core import marking, pipeline, preview, refine, sfm  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
-    except Exception as exc:  # 번들 누락 등은 ready에 담아 앱에 알림
-        base._emit({"type": "ready", "ok": False, "error": str(exc), "version": __version__})
+        import quickortho  # noqa: F401  미리 불러와 첫 작업 대기를 줄임
+        from ._core import marking, pipeline, preview, refine, sfm  # noqa: F401
+    except Exception as exc:  # 번들 누락 등은 ready에 담아 알림
+        base._emit({"type": "ready", "ok": False, "error": str(exc), "version": __version__,
+                    "protocol": PROTOCOL_VERSION})
     else:
-        base._emit({"type": "ready", "ok": True, "version": __version__,
-                    "warmup_s": round(__import__("time").perf_counter() - t0, 2)})
+        base._emit({"type": "ready", "ok": True, "version": __version__, "protocol": PROTOCOL_VERSION,
+                    "warmup_s": round(time.perf_counter() - t0, 2)})
     parser = _build_parser()
     for line in stdin:
         line = line.strip()
@@ -174,7 +220,7 @@ def serve(stdin=None, stdout=None) -> int:
             _dispatch(args, out)
             code = 0
         except Exception as exc:
-            Emitter(stdout, job=job).error(str(exc), traceback.format_exc())
+            _report_error(Emitter(stdout, job=job), exc)
             code = 1
         base._emit({"type": "done", "job": job, "code": code})
     return 0
@@ -190,13 +236,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args = _build_parser().parse_args(argv)
     except _ArgError as exc:
-        out.error(f"잘못된 인자: {exc}")
+        out.error(f"잘못된 인자: {exc}", code="invalid_argument")
         return 2
     if args.command == "serve":
         return serve()
     try:
         _dispatch(args, out)
         return 0
-    except Exception as exc:  # 앱이 항상 error 이벤트를 받도록 함
-        out.error(str(exc), traceback.format_exc())
+    except Exception as exc:  # 호출 측이 항상 error 이벤트를 받도록 함
+        _report_error(out, exc)
         return 1

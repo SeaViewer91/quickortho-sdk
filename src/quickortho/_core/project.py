@@ -9,7 +9,11 @@
     ├── refined/         마지막 보정 결과 재구성 (지역 좌표계)
     ├── refined_frame.json
     ├── edits.json       사용자 수정 사항 (삭제한 점, 자동 제거 기준, 수동 타이포인트, GCP)
+    ├── align_report.json 정렬 단계 보고서 (입력, SfM, 좌표 정렬, 시간, 경고)
+    ├── refine_report.json 마지막 보정 보고서 (보정한 경우에만)
     └── cache/           사진 보기용 축소 영상·확대 조각
+
+v0.2.0 엔진(데스크톱 앱)이 만든 프로젝트에는 align_report.json 대신 base_report.json이 있다. 둘 다 읽는다.
 
 재구성은 수치 안정성을 위해 지역 좌표계(투영 좌표 - origin)로 저장한다.
 보정은 항상 base에서 시작해 edits를 처음부터 다시 적용하므로, 여러 번 보정해도 결과가 누적되지 않는다.
@@ -25,6 +29,8 @@ from typing import Any
 
 import numpy as np
 import pycolmap
+
+from ..errors import ProjectError
 
 EDITS_VERSION = 1
 
@@ -63,8 +69,8 @@ class Project:
 
     def require(self) -> None:
         if not self.exists():
-            raise RuntimeError(
-                "보정용 프로젝트가 없음. 이 버전에서 정사 모자이크를 다시 생성해야 정밀 보정을 쓸 수 있음"
+            raise ProjectError(
+                "정렬 결과(project/)가 없음. 먼저 align() 또는 process()를 실행해야 함", "not_aligned"
             )
 
     # ── 메타 정보 ──
@@ -109,9 +115,7 @@ class Project:
         정사 모자이크를 새로 만들면 이전 보정 결과와 점 ID 기반 수정(삭제한 점)은 무효가 되므로 지운다.
         GCP·수동 타이포인트의 사진 좌표는 재구성과 무관하므로 그대로 둔다.
         """
-        shutil.rmtree(self.dir / "refined", ignore_errors=True)
-        (self.dir / "refined_frame.json").unlink(missing_ok=True)
-        (self.dir / "refined_extra.json").unlink(missing_ok=True)
+        self.reset_refined()
         shutil.rmtree(self.dir / "cache", ignore_errors=True)
         if self.edits_path.exists():
             edits = self.load_edits()
@@ -142,6 +146,7 @@ class Project:
         shutil.rmtree(self.dir / "refined", ignore_errors=True)
         (self.dir / "refined_frame.json").unlink(missing_ok=True)
         (self.dir / "refined_extra.json").unlink(missing_ok=True)
+        (self.dir / "refine_report.json").unlink(missing_ok=True)
 
     def has_refined(self) -> bool:
         return (self.dir / "refined").is_dir() and (self.dir / "refined_frame.json").exists()
@@ -154,12 +159,34 @@ class Project:
         rec, frame = self.load_base()
         return rec, frame, "base"
 
-    def save_base_report(self, report: dict) -> None:
-        (self.dir / "base_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
+    def update_render(self, render: dict) -> None:
+        """마지막 정사 모자이크 생성 옵션을 meta.json에 기록한다 (보정 후 재생성에 같은 옵션을 씀)."""
+        meta = self.meta()
+        meta["render"] = render
+        (self.dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    def base_report(self) -> dict:
-        p = self.dir / "base_report.json"
+    # ── 보고서 ──
+    def _write_json(self, name: str, data: dict) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        (self.dir / name).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def _read_json(self, name: str) -> dict:
+        p = self.dir / name
         return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def save_align_report(self, report: dict) -> None:
+        self._write_json("align_report.json", report)
+        (self.dir / "base_report.json").unlink(missing_ok=True)
+
+    def align_report(self) -> dict:
+        """정렬 단계 보고서. 이전 버전 프로젝트는 base_report.json(최초 전체 보고서)을 읽는다."""
+        return self._read_json("align_report.json") or self._read_json("base_report.json")
+
+    def save_refine_report(self, part: dict) -> None:
+        self._write_json("refine_report.json", part)
+
+    def refine_report(self) -> dict:
+        return self._read_json("refine_report.json") if self.has_refined() else {}
 
     # ── 수정 사항 ──
     @property

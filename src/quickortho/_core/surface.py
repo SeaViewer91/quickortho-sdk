@@ -10,6 +10,7 @@ from scipy import ndimage
 from scipy.interpolate import griddata
 from scipy.spatial import cKDTree
 
+from ..errors import AlignmentError
 from .geo import Projector, UtmProjector
 
 
@@ -34,7 +35,7 @@ def align_to_gps(
     """
     names = [img.name for img in rec.images.values() if img.name in gps and img.has_pose]
     if len(names) < 3:
-        raise RuntimeError("좌표 정렬 실패: GPS가 있는 정합 영상이 3장 미만임")
+        raise AlignmentError("좌표 정렬 실패: GPS가 있는 정합 영상이 3장 미만임", "georef_too_few")
     lon = np.array([gps[n][0] for n in names])
     lat = np.array([gps[n][1] for n in names])
     alt = np.array([gps[n][2] for n in names])
@@ -44,7 +45,7 @@ def align_to_gps(
     ransac.max_error = ransac_max_error_m
     sim3 = pycolmap.align_reconstruction_to_locations(rec, names, tgt, 3, ransac)
     if sim3 is None:
-        raise RuntimeError("좌표 정렬 실패: GPS와 SfM 카메라 배치가 일치하지 않음")
+        raise AlignmentError("좌표 정렬 실패: GPS와 SfM 카메라 배치가 일치하지 않음", "georef_mismatch")
     rec.transform(sim3)
     centers = np.array([rec.find_image_with_name(n).projection_center() for n in names])
     residual = float(np.sqrt(np.mean(np.sum((centers[:, :2] - tgt[:, :2]) ** 2, axis=1))))

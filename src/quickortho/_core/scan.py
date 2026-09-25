@@ -10,7 +10,8 @@ from typing import Any
 
 from PIL import Image
 
-from .protocol import Emitter
+from ..errors import InputError
+from .protocol import Emitter, NullEmitter
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg"}
 
@@ -188,9 +189,9 @@ def select_mapping_cameras(records: list[ImageRecord]) -> dict[str, str]:
 def scan_folder(folder: Path, recursive: bool = False, emitter: Emitter | None = None) -> dict[str, Any]:
     folder = Path(folder)
     if not folder.is_dir():
-        raise FileNotFoundError(f"폴더를 찾을 수 없음: {folder}")
+        raise InputError(f"폴더를 찾을 수 없음: {folder}", "folder_not_found")
 
-    out = emitter or Emitter()
+    out = emitter if emitter is not None else NullEmitter()
     pattern = "**/*" if recursive else "*"
     files = sorted(
         p for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
