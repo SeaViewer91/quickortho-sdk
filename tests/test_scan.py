@@ -18,9 +18,16 @@ def _xmp(**attrs: str) -> bytes:
     return xml.encode()
 
 
+def _dms(deg: float) -> tuple[float, float, float]:
+    d = int(deg)
+    m = int((deg - d) * 60)
+    sec = round((deg - d - m / 60) * 3600, 4)
+    return (float(d), float(m), sec)
+
+
 def make_jpeg(path: Path, *, model: str, focal: float, focal35: int, size=(64, 48),
-              lat=35.1, lon=129.0, xmp: bytes | None = None) -> None:
-    img = Image.new("RGB", size, (100, 150, 200))
+              lat=35.1, lon=129.0, xmp: bytes | None = None, color=(100, 150, 200)) -> None:
+    img = Image.new("RGB", size, color)
     exif = Image.Exif()
     exif[271] = "DJI"
     exif[272] = model
@@ -29,9 +36,9 @@ def make_jpeg(path: Path, *, model: str, focal: float, focal35: int, size=(64, 4
     exif_ifd[41989] = focal35
     gps = exif.get_ifd(0x8825)
     gps[1] = "N"
-    gps[2] = (35.0, 6.0, 0.0)  # 35.1
+    gps[2] = _dms(lat)
     gps[3] = "E"
-    gps[4] = (129.0, 0.0, 0.0)
+    gps[4] = _dms(lon)
     buf = io.BytesIO()
     img.save(buf, "JPEG", exif=exif.tobytes())
     data = buf.getvalue()

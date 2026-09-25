@@ -23,6 +23,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("folder", type=Path)
     p_scan.add_argument("--recursive", action="store_true", help="하위 폴더까지 스캔")
 
+    p_prev = sub.add_parser("preview", help="빠른 미리보기 (EXIF 기반 촬영 범위·중복도·간이 모자이크)")
+    p_prev.add_argument("folder", type=Path, help="영상 폴더")
+    p_prev.add_argument("-o", "--output", type=Path, required=True, help="결과 폴더")
+    p_prev.add_argument("--max-size", type=int, default=2048, help="간이 모자이크 긴 변(px)")
+
     p_ortho = sub.add_parser("ortho", help="정사 모자이크 생성 (fast ortho)")
     p_ortho.add_argument("folder", type=Path, help="영상 폴더")
     p_ortho.add_argument("-o", "--output", type=Path, required=True, help="결과 폴더")
@@ -55,6 +60,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "scan":
             out.result("scan", scan_folder(args.folder, recursive=args.recursive, emitter=out))
+        elif args.command == "preview":
+            from .preview import run_preview
+
+            out.result("preview", run_preview(args.folder, args.output, out, max_size=args.max_size))
         elif args.command == "ortho":
             # 무거운 의존성(pycolmap, rasterio 등)은 ortho 명령에서만 불러옴
             from .pipeline import OrthoOptions, run_ortho

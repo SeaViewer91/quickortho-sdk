@@ -18,6 +18,7 @@ dependencies = [
     "rasterio>=1.4",
     "pyproj>=3.6",
     "psutil>=5.9",
+    "shapely>=2.0",
 ]
 
 [project.optional-dependencies]

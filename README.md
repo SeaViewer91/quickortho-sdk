@@ -21,12 +21,30 @@ QuickOrtho 데스크톱 앱이 사이드카로 실행하는 Python 처리 엔진
 ```bash
 python -m quickortho_engine version
 python -m quickortho_engine scan <영상 폴더> [--recursive]
+python -m quickortho_engine preview <영상 폴더> -o <결과 폴더> [--max-size 2048]
 python -m quickortho_engine ortho <영상 폴더> -o <결과 폴더> [옵션]
 ```
 
 - `scan`: 폴더 내 JPG의 EXIF·DJI XMP를 읽어 위치·고도·짐벌 자세·카메라 정보를 수집하고,
   카메라별로 묶은 뒤 매핑용(광각) 카메라를 자동 선별함
+- `preview`: SfM 없이 EXIF/XMP만으로 촬영 범위·중복도·누락 구역·간이 모자이크를 수 초 내에 생성함
 - `ortho`: fast ortho 방식으로 정사 모자이크를 생성함
+
+### `preview` 결과물
+
+| 파일 | 내용 |
+|---|---|
+| `quicklook.png` | 간이 모자이크 (1/8 축소 디코딩 영상을 평면 가정 호모그래피로 배치) |
+| `coverage.png` | 중복도 지도 (1장 빨강, 2장 주황, 3~4장 노랑, 5장 이상 초록, 누락 보라) |
+| `preview.geojson` | 영상별 촬영 범위, 누락 구역, 저중복 구역, 촬영 위치 (WGS84) |
+| `preview.json` | 요약 (두 PNG의 네 모서리 경위도, 중복도 통계, 누락 수, 전방 중복률, 경고) |
+
+- 지면을 이륙 지점 높이의 평면으로 가정하므로 위치 오차는 수 m 수준임. 누락 확인용이며 측량용이 아님
+- 촬영 자세는 DJI XMP의 짐벌 yaw·pitch를 사용함. 짐벌 yaw가 기체 yaw와 일정하게 어긋난 경우(Mavic 2 샘플에서 약 31° 사례 확인) 자동 보정함
+- XMP가 없으면 비행 방향으로 yaw를 추정하고 35mm 환산 24mm 화각을 가정함 (정확도 낮음, 경고 표시)
+- 누락 구역은 촬영 범위 내부 구멍과, 서로 떨어진 촬영 범위 사이의 틈(영상 한 장 폭 이하)으로 판정함.
+  외곽의 계단 모양 오목부는 누락으로 보지 않음
+- 성능: Mavic 2 Pro 18장 약 2초, 77장 약 4초 (2코어 VM)
 
 ### `ortho` 옵션
 
