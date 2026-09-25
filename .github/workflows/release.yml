@@ -1,0 +1,43 @@
+name: release
+
+# v* 태그 push 시: 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist 게시
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Releases 게시
+    needs: ci
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: 태그와 패키지 버전 일치 확인
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(python3 -c "import re;print(re.search(r'__version__ = \"(.+)\"', open('src/quickortho/_version.py').read())[1])")
+          echo "tag=$TAG version=$VER"
+          test "$TAG" = "$VER"
+          test -f "docs/release-notes/v$VER.md"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist
+      - name: 게시
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          FLAGS=""
+          case "$VER" in *a*|*b*|*rc*) FLAGS="--prerelease" ;; esac
+          gh release create "v$VER" dist/* \
+            --title "QuickOrtho SDK v$VER" \
+            --notes-file "docs/release-notes/v$VER.md" $FLAGS

@@ -39,7 +39,8 @@ class _RowCounter:
             if self.con is None:
                 if not self.db_path.exists():
                     return None
-                self.con = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=0.2)
+                # as_uri(): Windows 경로(역슬래시, 드라이브 문자)와 한글 경로를 URI로 올바르게 바꿈
+                self.con = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=0.2)
             return self.con.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0]
         except sqlite3.Error:
             return None

@@ -1,0 +1,79 @@
+name: ci
+
+# main 브랜치 push, PR, 수동 실행(Actions 탭 → ci → Run workflow), release 워크플로에서 호출될 때 실행
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: wheel 빌드
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: wheel·sdist 빌드
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -l dist
+      - name: 순수 파이썬 wheel인지 확인 (모든 OS 공용)
+        run: ls dist/*-py3-none-any.whl
+      - uses: actions/upload-artifact@v6
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  test:
+    name: 시험 (${{ matrix.os }}, Python ${{ matrix.python }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 지원 범위의 최저·최고 Python 버전을 OS마다 두 버전 이미지에서 시험함
+          - { os: ubuntu-22.04, python: "3.10" }
+          - { os: ubuntu-24.04, python: "3.14" }
+          - { os: macos-14, python: "3.10" }      # Apple Silicon, macOS 14
+          - { os: macos-15, python: "3.14" }      # Apple Silicon, macOS 15
+          - { os: windows-2022, python: "3.10" }
+          - { os: windows-2025, python: "3.14" }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+      - uses: actions/download-artifact@v7
+        with:
+          name: dist
+          path: dist
+      - name: 빌드한 wheel 설치 (소스가 아닌 설치본으로 시험)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install dist/*.whl pytest
+      - name: 명령 확인
+        run: |
+          quickortho version
+          quickortho-engine version
+          printf '{"job":1,"argv":["version"]}\n' | quickortho serve | tee serve.log
+          grep -q '"type": "done", "job": 1, "code": 0' serve.log
+      - name: 시험 (합성 드론 영상으로 SfM → 정사 → GCP 보정 포함)
+        run: python -m pytest -q -p no:cacheprovider

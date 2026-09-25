@@ -56,6 +56,9 @@ version = { attr = "quickortho._version.__version__" }
 where = ["src"]
 include = ["quickortho*"]
 
+[tool.setuptools.package-data]
+quickortho = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [
