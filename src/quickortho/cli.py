@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:  # 호출 측이 항상 error 이벤트를 받도록 함
         _report_error(out, exc)
-        return 1
+        return 2 if isinstance(exc, _ArgError) else 1
 
 
 def _pop_format(argv: list[str]) -> tuple[str, list[str]]:

@@ -9,9 +9,14 @@ import quickortho as qo
 
 result = qo.process("DJI_images/", "workspace/", on_event=qo.print_progress)
 print(result.orthomosaic)   # workspace/orthomosaic.tif (COG, UTM)
+
+# 산출물을 변수로 받아 다른 라이브러리에 바로 넘기기 (OpenCV 함수처럼)
+image, transform, crs = result                                     # numpy RGBA, affine.Affine, pyproj.CRS
+project = qo.Project.open("workspace/")
+cameras, (xyz, rgb) = project.cameras(), project.points()          # 카메라 자세(K·dist·R·t), 희소 점군
 ```
 
-> 현재 버전은 0.1.0(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
+> 최신 릴리스는 0.1.0(알파)이며, main 브랜치는 0.2.0 개발 중임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
 
 ## 주요 기능
 
@@ -22,8 +27,11 @@ print(result.orthomosaic)   # workspace/orthomosaic.tif (COG, UTM)
 | 정렬 | SIFT 특징점 → GPS 기반 공간 매칭 → 전역 SfM(실패 시 증분 SfM) → GPS 좌표 정렬 |
 | 정사 모자이크 | 희소 점군 기반 간이 DSM → 타일 단위 정사투영 → Cloud Optimized GeoTIFF |
 | 정밀 보정 | GCP(국내 좌표계 포함)·수동 타이포인트·오차 큰 관측 제거 후 번들 조정, 검사점 오차 보고 |
+| 산출물 변수 | 결과를 풀어서 받으면 numpy 배열·`Affine`·`CRS`·카메라(OpenCV 형식 K·dist·R·t, ω·φ·κ)·점군이 나옴 |
+| 사진 ↔ 지도 좌표 | 원본 사진의 탐지 결과를 지도 좌표로, 지도 좌표를 사진 좌표로 변환 |
+| 좌표계·격자·지형면 | 결과 좌표계 지정(예: EPSG:5186), 시기별 결과를 같은 격자로 고정, 수평면·외부 DEM으로 정사투영 |
 | 진행·중단 | 진행 이벤트 콜백, 다른 스레드에서 중단(`CancelToken`), 표준 `logging` 기록 |
-| 명령줄·상주 모드 | `quickortho` 명령과 JSON-lines 상주 모드(`serve`). 다른 언어 프로그램에서도 쓸 수 있음 |
+| 명령줄·상주 모드 | `quickortho` 명령(터미널에서는 진행 막대, 파이프에서는 JSON), 환경 진단 `doctor`, 상주 모드 `serve` |
 
 설계 기준은 **맥북 에어 M1 8GB(CPU 전용)** 임. 모든 기능이 GPU 없이 동작하며, 기본값으로 영상 수백 장을 처리할 때
 피크 메모리 약 4GB 이하를 목표로 함.
@@ -88,6 +96,7 @@ quickortho ortho flight_0925/ -o flight_0925_out/ > events.jsonl
 | [빠른 시작](docs/quickstart.md) | 처음 쓰는 사람을 위한 따라 하기 |
 | [핵심 개념](docs/concepts.md) | 워크스페이스, 처리 단계, 좌표계, 정확도, 카메라 선별 |
 | [API 레퍼런스](docs/api-reference.md) | 모든 공개 클래스·함수·옵션·결과·예외 |
+| [산출물을 변수로 쓰기](docs/outputs.md) | 결과 풀기, 래스터·카메라·점군, 좌표 규약, OpenCV·rasterio·PyTorch 연동 예 |
 | [진행률과 중단](docs/events-and-cancel.md) | 이벤트 콜백, CancelToken, 로깅, 스레드·프로세스 활용 방식 |
 | [정밀 보정](docs/refinement.md) | GCP·타이포인트 보정 흐름, 수정 사항 형식, 점 위치 예측 |
 | [결과물과 보고서](docs/report.md) | 결과 파일, `report.json`·`preview.json` 필드 |

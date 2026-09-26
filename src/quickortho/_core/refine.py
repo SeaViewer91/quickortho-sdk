@@ -456,6 +456,23 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
 
         # 6) 정사 모자이크 재생성
         opts = OrthoOptions.from_render_dict(meta.get("render") or {})
+        if frame.epsg != base_frame.epsg:
+            # 좌표계가 바뀌면(GCP 좌표계) 이전 좌표계로 지정한 범위·격자 기준점·평면 높이는 의미가 없어짐
+            dropped = []
+            if opts.bounds is not None:
+                opts.bounds = None
+                dropped.append("bounds")
+            if tuple(opts.grid_origin) != (0.0, 0.0):
+                opts.grid_origin = (0.0, 0.0)
+                dropped.append("grid_origin")
+            if str(opts.dsm) == "plane" and opts.dsm_z is not None:
+                opts.dsm_z = None
+                dropped.append("dsm_z")
+            if dropped:
+                warnings.append(
+                    f"좌표계가 EPSG:{base_frame.epsg}에서 EPSG:{frame.epsg}로 바뀌어 저장된 정사 옵션 {', '.join(dropped)}를 "
+                    "적용하지 않음. 새 좌표계 값으로 orthomosaic()을 다시 실행해야 함"
+                )
         products = render_products(to_absolute(rec, frame), image_dir, proj.ortho_dir, frame.epsg, opts, out, timings)
 
     timings["total_s"] = time.perf_counter() - t_start

@@ -459,7 +459,9 @@ def run_preview(
     geojson_path.write_text(json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False),
                             encoding="utf-8")
 
-    bx0, by0, bx1, by1 = bounds
+    # PNG·coverage.tif 격자의 실제 경계 (세로는 셀 크기 배수로 잘림)
+    bx0, by1 = bounds[0], bounds[3]
+    bx1, by0 = bx0 + grid.shape[1] * cell, by1 - grid.shape[0] * cell
     corners_en = [(bx0, by1), (bx1, by1), (bx1, by0), (bx0, by0)]  # 좌상, 우상, 우하, 좌하
     lons, lats = inv.transform([c[0] for c in corners_en], [c[1] for c in corners_en])
     if gap_polys:

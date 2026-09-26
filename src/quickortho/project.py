@@ -313,7 +313,9 @@ class Project:
 
     def _camera(self, image: str):
         self._store.require()
-        key = (self._store.has_refined(), (self._store.dir / "base").stat().st_mtime_ns)
+        d = self._store.dir
+        key = tuple((d / n).stat().st_mtime_ns if (d / n).exists() else None
+                    for n in ("base_frame.json", "refined_frame.json", "refined"))
         if getattr(self, "_cam_cache", None) is None or self._cam_cache[0] != key:
             self._cam_cache = (key, self.cameras())
         return self._cam_cache[1][image]
@@ -351,7 +353,7 @@ class Project:
         """스캔 → SfM → GPS 좌표 정렬을 실행하고 결과를 ``project/``에 저장함.
 
         이전 정렬·보정 결과와 정사 모자이크 결과물은 새 정렬과 맞지 않으므로 지움. GCP·타이포인트의 사진 표시는 유지함.
-        ``options``에서는 ``sfm``과 ``keep_work``만 씀.
+        ``options``에서는 ``sfm``, ``keep_work``, ``epsg``만 씀.
 
         Raises:
             InputError: 영상이 없음(``no_images``), 처리 가능한 영상이 3장 미만(``too_few_images``),
@@ -369,11 +371,12 @@ class Project:
         """현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦.
 
         SfM을 다시 하지 않으므로 GSD만 바꿔 다시 만들 때 빠름. ``options``에서는 ``gsd_m``, ``gsd_scale``,
-        ``cache_budget_mb``를 씀. 여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
+        ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``을 씀.
+        여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
 
         Raises:
             ProjectError: 정렬 결과가 없음 (``not_aligned``).
-            InputError: 원본 영상 폴더가 없어짐 (``image_dir_missing``).
+            InputError: 원본 영상 폴더가 없어짐(``image_dir_missing``), 옵션 값 오류(``invalid_argument``).
             ProcessingError: DSM 생성 실패 (``dsm_failed``).
             Cancelled: 중단됨.
         """

@@ -50,7 +50,7 @@ with rasterio.open(result.orthomosaic) as ds:
     "epsg": 32652, "gps_residual_rms_m": 0.156, "num_aligned": 13,
     "note": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요"
   },
-  "dsm": {"resolution_m": 5.26, "num_points": 7085},
+  "dsm": {"mode": "sparse", "resolution_m": 5.26, "num_points": 7085},
   "ortho": {
     "width": 3812, "height": 3688, "gsd_m": 0.0787, "covered_area_m2": 79027.5,
     "tiles": 64, "source_gsd_m": 0.0393
@@ -93,8 +93,12 @@ with rasterio.open(result.orthomosaic) as ds:
 | `georef.mode` | (보정 후) `gcp`, `gcp_shift`, `gps` |
 | (보정 후 `gcp` 모드) | GPS 기준이 아니므로 `gps_residual_rms_m`, `num_aligned`를 뺌. 정확도는 `refine.gcp_summary.check`로 판단 |
 | `georef.note` | 정확도 안내 문장 |
+| `dsm.mode` | 지형면 방식: `sparse`, `plane`, `external` |
+| `dsm.plane_z` | (`plane`) 평면 높이(m) |
+| `dsm.source` | (`external`) 외부 DSM 파일 절대 경로 |
+| `dsm.vertical_offset_m` | (`external`) 외부 DSM에 더한 높이 보정량(m) |
 | `dsm.resolution_m` | DSM 격자 간격(m) |
-| `dsm.num_points` | DSM에 쓴 점 수 (이상치 제거 후) |
+| `dsm.num_points` | 희소 점군 점 수 (이상치 제거 후). 외부 DSM을 높이 보정 없이(`dsm_vertical_align=False`) 쓰면 0 |
 | `ortho.width`, `height` | 결과 화소 크기 |
 | `ortho.gsd_m` | 결과 GSD(m) |
 | `ortho.source_gsd_m` | 원본 GSD(m) |
@@ -139,6 +143,7 @@ with rasterio.open(result.orthomosaic) as ds:
 |---|---|
 | `quicklook.png` | 간이 모자이크 (1/8 축소 디코딩 영상을 평면 가정 호모그래피로 배치). `quicklook=False`면 없음 |
 | `coverage.png` | 중복도 지도: 1장 빨강, 2장 주황, 3~4장 노랑, 5장 이상 초록, 누락 보라 |
+| `coverage.tif` | 중복도 GeoTIFF (UTM): 밴드 1 중복 매수(uint16), 밴드 2 누락 구역(1). quicklook·coverage.png와 같은 격자 |
 | `preview.geojson` | WGS84 FeatureCollection (아래 표) |
 | `preview.json` | 요약 (`PreviewResult.raw`와 같음) |
 
@@ -160,12 +165,14 @@ with rasterio.open(result.orthomosaic) as ds:
   "epsg": 32652,
   "corners_lonlat": [[129.10467, 35.13519], [129.10714, 35.13518], [129.10714, 35.13387], [129.10467, 35.13387]],
   "cell_m": 0.2196,
+  "bounds": [520391.8, 3887345.4, 520617.2, 3887491.2],
   "coverage": {"survey_area_m2": 22665.1, "gap_area_m2": 0.0, "low_overlap_area_m2": 0.0,
                "overlap_median": 4.0, "overlap_p10": 1.0},
   "forward_overlap_median": 0.695,
   "flight_height_m": {"min": 74.6, "max": 75.6},
   "gaps": 0,
-  "outputs": {"quicklook": ".../quicklook.png", "coverage": ".../coverage.png", "geojson": ".../preview.geojson"},
+  "outputs": {"quicklook": ".../quicklook.png", "coverage": ".../coverage.png",
+              "coverage_tif": ".../coverage.tif", "geojson": ".../preview.geojson"},
   "warnings": ["롤링 셔터 카메라 포함"],
   "time_s": 1.08
 }
@@ -175,6 +182,7 @@ with rasterio.open(result.orthomosaic) as ds:
 |---|---|
 | `corners_lonlat` | 두 PNG의 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
 | `cell_m` | 중복도 격자 크기(m) = PNG 한 화소 크기 |
+| `bounds` | 격자 범위 `[xmin, ymin, xmax, ymax]` (`epsg` 좌표계). `PreviewResult.transform`을 만드는 데 씀 |
 | `coverage.survey_area_m2` | 조사 영역 면적 (촬영 범위를 합치고 작은 틈을 메운 영역) |
 | `coverage.gap_area_m2` | 누락 면적 |
 | `coverage.low_overlap_area_m2` | 저중복(2장 미만) 면적. 조사 영역 가장자리 띠는 제외 |

@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.1.0
+대상 버전: 0.2.0
 
 ## 목차
 
@@ -14,6 +14,7 @@
 8. [예외](#8-예외)
 9. [로깅](#9-로깅)
 10. [API 안정성](#10-api-안정성)
+11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `doctor`
 
 ---
 
@@ -29,6 +30,8 @@ import quickortho as qo
 - 오래 걸리는 함수는 모두 키워드 인자 `on_event`(진행 콜백)와 `cancel`(중단 토큰)을 받음
 - 모든 함수는 **호출한 스레드에서 끝날 때까지 실행되는 동기 함수**임. 비동기 처리는 스레드·프로세스로 감쌈
   ([진행률과 중단](events-and-cancel.md) 참고)
+- 결과 객체는 **여러 변수로 풀어서** 받을 수 있음 (`image, transform, crs = project.process()`).
+  풀리는 값과 형식은 [5절](#5-결과-객체)과 [산출물을 변수로 쓰기](outputs.md) 참고
 
 ---
 
@@ -69,7 +72,7 @@ SfM 없이 EXIF·XMP만으로 촬영 범위·중복도·누락 구역·간이 �
 | `options` | `PreviewOptions \| None` | 미리보기 옵션. 기본값은 `PreviewOptions()` |
 
 - 결과 파일: `quicklook.png`(간이 모자이크, `quicklook=False`면 만들지 않음), `coverage.png`(중복도 지도),
-  `preview.geojson`, `preview.json`. 형식은 [결과물과 보고서](report.md#3-미리보기-결과) 참고
+  `coverage.tif`(중복 매수·누락 GeoTIFF), `preview.geojson`, `preview.json`. 형식은 [결과물과 보고서](report.md#3-미리보기-결과) 참고
 - 반환: [`PreviewResult`](#previewresult)
 - 예외: `InputError`(`folder_not_found`, `no_gps`), `Cancelled`
 
@@ -115,6 +118,23 @@ QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_Quic
 | `gcps` | `list[GCP]` | 저장된 GCP 목록 (정렬 필요) |
 | `tiepoints` | `list[TiePoint]` | 저장된 수동 타이포인트 목록 (정렬 필요) |
 
+### 산출물 읽기
+
+자세한 사용법과 좌표 규약은 [산출물을 변수로 쓰기](outputs.md) 참고.
+
+| 메서드 | 반환 | 설명 |
+|---|---|---|
+| `cameras()` | `Cameras` | 현재 재구성(보정했으면 보정 결과)의 카메라 자세 목록 |
+| `points()` | `PointCloud` | 현재 재구성의 희소 점군. 풀면 `xyz, rgb` |
+| `read_orthomosaic(*, scale=1.0, bounds=None, order="RGBA")` | `(image, transform, crs)` | 정사 모자이크 |
+| `read_dsm(*, scale=1.0, bounds=None)` | `(z, transform, crs)` | 간이 DSM |
+| `image_to_ground(image, uv, *, z=None)` | `(N, 3)` | 사진 좌표 → 지도 좌표. `z`가 없으면 DSM과, 있으면 그 높이의 수평면과 교차 |
+| `ground_to_image(image, xyz)` | `(N, 2)` | 지도 좌표 → 사진 좌표 (SDK 규약) |
+
+- `cameras()`, `points()`, `image_to_ground()`, `ground_to_image()`: `ProjectError`(`not_aligned`)
+- `image_to_ground()`에 `z`가 없고 DSM이 없으면 `ProjectError`(`not_rendered`). 정합되지 않은 사진 이름은 `KeyError`
+- `read_orthomosaic()`, `read_dsm()`: 결과가 없으면 `ProjectError`(`not_rendered`)
+
 #### `report() -> dict`
 
 현재 `report.json` 내용. 없으면 빈 dict. 형식은 [결과물과 보고서](report.md#2-reportjson) 참고.
@@ -137,7 +157,7 @@ QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_Quic
 
 스캔 → 특징점 추출 → 매칭 → SfM → GPS 좌표 정렬을 실행하고 결과를 `project/`에 저장함.
 
-- `options`: `OrthoOptions`. 이 단계에서는 `sfm`과 `keep_work`만 씀
+- `options`: `OrthoOptions`. 이 단계에서는 `sfm`, `keep_work`, `epsg`만 씀
 - 이전 정렬·보정 결과와 정사 모자이크 결과물(`orthomosaic.tif`, `dsm.tif`, `preview.png`, `report.json`)은 지움.
   마지막 정사 모자이크 옵션(`meta.json`의 `render`)도 비우므로, 다시 정렬한 뒤 바로 `refine()`을 부르면 기본 옵션으로 정사 모자이크를 만듦.
   GCP·타이포인트의 사진 표시는 유지함 ([무엇이 언제 지워지는가](concepts.md#무엇이-언제-지워지는가))
@@ -151,6 +171,7 @@ QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_Quic
 | `InputError` | `no_images` | JPG 영상이 없음 |
 | `InputError` | `too_few_images` | 처리 대상 영상이 3장 미만 |
 | `InputError` | `too_few_gps` | GPS가 있는 영상이 3장 미만 |
+| `InputError` | `invalid_argument` | 옵션 값 오류 (경위도 EPSG 등) |
 | `AlignmentError` | `sfm_failed` | 정합된 영상이 3장 미만 |
 | `AlignmentError` | `georef_too_few` | GPS가 있는 정합 영상이 3장 미만 |
 | `AlignmentError` | `georef_mismatch` | GPS 배치와 SfM 카메라 배치가 맞지 않음 |
@@ -160,12 +181,13 @@ QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_Quic
 
 현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦. SfM을 다시 하지 않으므로 해상도만 바꿀 때 빠름.
 
-- `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`만 씀
+- `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`,
+  `dsm_z`, `dsm_vertical_align`을 씀
 - 여기서 쓴 옵션은 `project/meta.json`에 저장되어, 이후 `refine()`이 정사 모자이크를 다시 만들 때도 같은 옵션을 씀
 - 결과물은 임시 파일에 먼저 쓰고 마지막에 교체하므로, 중단·실패해도 이전 결과물이 유지됨
 - 반환: [`OrthoResult`](#orthoresult)
-- 예외: `ProjectError`(`not_aligned`), `InputError`(`image_dir_missing`: 원본 영상 폴더가 없어짐),
-  `ProcessingError`(`dsm_failed`: 유효한 3D 점이 10개 미만), `Cancelled`
+- 예외: `ProjectError`(`not_aligned`), `InputError`(`image_dir_missing`: 원본 영상 폴더가 없어짐, `invalid_argument`: 옵션 값 오류),
+  `ProcessingError`(`dsm_failed`: [원인](#8-예외)), `Cancelled`
 
 ```python
 project = qo.Project.open("out")
@@ -314,6 +336,20 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `keep_work` | `False` | align | COLMAP DB·희소 재구성 원본을 `<workspace>/work/`에 남김 (문제 분석용) |
 | `cache_budget_mb` | `600` | orthomosaic | 정사투영 중 축소 영상 캐시 메모리 상한(MB) |
 | `sfm` | `SfmOptions()` | align | SfM 옵션 |
+| `epsg` | `None` | align | 결과 좌표계 EPSG. 투영 좌표계만 가능 (예: 5186). `None`이면 촬영 위치의 UTM. GCP 보정을 하면 GCP 좌표계가 우선함 |
+| `bounds` | `None` | orthomosaic | 결과 범위 `(xmin, ymin, xmax, ymax)` (결과 좌표계). `None`이면 촬영 범위 전체 |
+| `grid_origin` | `(0.0, 0.0)` | orthomosaic | 화소 격자 기준점. 결과 경계를 이 점에서 GSD 배수 위치로 맞춤 |
+| `dsm` | `"sparse"` | orthomosaic | 지형면: `"sparse"`(희소 점군 보간), `"plane"`(수평면), 외부 DSM/DEM GeoTIFF 경로 |
+| `dsm_z` | `None` | orthomosaic | `dsm="plane"`의 높이(m, 결과 좌표계 높이 기준). `None`이면 희소 점군 높이 중앙값 |
+| `dsm_vertical_align` | `True` | orthomosaic | 외부 DSM을 희소 점군 높이에 맞춰 중앙값 차이만큼 올리거나 내림 (해발고·타원체고 차이 보정) |
+
+- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, 경위도 EPSG, 잘못된 `bounds`, 없는 DSM 파일 등
+- `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
+  `dsm_vertical_align`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
+  단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
+  새 좌표계 값으로 `orthomosaic()`을 다시 실행함
+- `gsd_m`·`bounds`·`grid_origin`·`epsg`를 같게 주면 여러 시기 결과가 화소 단위로 겹침 ([예](outputs.md#9-시기별-결과를-같은-격자로-만들기))
+- 외부 DSM은 결과 격자로 재투영(쌍선형)하며, 외부 자료가 없는 곳은 부드럽게 외삽함. 촬영 범위를 전혀 덮지 않으면 `ProcessingError`(`dsm_failed`)
 
 ### `SfmOptions`
 
@@ -341,7 +377,17 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 ## 5. 결과 객체
 
 모든 결과 객체는 불변(frozen) dataclass이며, 원본 dict를 `raw`(또는 `report`)로 함께 가짐.
-원본 dict는 JSON으로 그대로 저장·전송할 수 있음.
+원본 dict는 JSON으로 그대로 저장·전송할 수 있음. 여러 변수로 풀면 아래 값이 차례로 나옴.
+
+| 결과 | 풀어서 받기 |
+|---|---|
+| `ScanResult` | `images, summary` |
+| `PreviewResult` | `quicklook, coverage, transform, crs` |
+| `AlignResult` | `cameras, points, crs` |
+| `OrthoResult` | `image, transform, crs` |
+| `RefineResult` | `image, transform, crs, gcps` |
+
+`OrthoResult`·`RefineResult`를 풀면 정사 모자이크 전체를 메모리로 읽음. 결과가 크면 `res.read(scale=...)`를 씀.
 
 ### `ScanResult`
 
@@ -355,6 +401,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `failed` | `list[dict]` | 읽기 실패 `[{"file", "error"}]` |
 | `selected_images` | `list[dict]` | 처리 대상 영상만 (속성) |
 | `num_with_gps` | `int` | 처리 대상 중 GPS 있는 영상 수 (속성) |
+| `positions(selected_only=True)` | `ndarray` | 촬영 위치 (N, 3) [경도, 위도, 고도], GPS 없는 행은 NaN (메서드) |
 | `raw` | `dict` | 원본 |
 
 영상별 정보(`images[i]`):
@@ -381,8 +428,8 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | 속성 | 형식 | 설명 |
 |---|---|---|
 | `output_dir` | `Path` | 결과 폴더 |
-| `quicklook` | `Path \| None` | 간이 모자이크 PNG (`quicklook=False`면 `None`) |
-| `coverage` | `Path` | 중복도 지도 PNG |
+| `quicklook_path` (`quicklook`) | `Path \| None` | 간이 모자이크 PNG (`quicklook=False`면 `None`) |
+| `coverage_path` (`coverage`) | `Path` | 중복도 지도 PNG |
 | `geojson` | `Path` | 촬영 범위·누락·저중복·촬영 위치 GeoJSON |
 | `corners_lonlat` | `list[list[float]]` | 두 PNG의 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
 | `num_images` | `int` | 쓴 영상 수 |
@@ -390,6 +437,14 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `coverage_stats` | `dict` | `survey_area_m2`, `gap_area_m2`, `low_overlap_area_m2`, `overlap_median`, `overlap_p10` |
 | `warnings` | `list[str]` | 경고 |
 | `raw` | `dict` | `preview.json`과 같음 |
+| `transform`, `crs`, `bounds` | | 격자의 지도 좌표 정보 (quicklook·coverage 공통, 속성) |
+| `read_quicklook(order="RGBA")` | `ndarray \| None` | 간이 모자이크 배열 |
+| `read_coverage()` | `ndarray` | 중복 매수 (H, W) uint16 |
+| `read_gap_mask()` | `ndarray` | 누락 구역 (H, W) bool |
+| `gaps(crs="map")`, `footprints(crs="map")`, `low_overlap(crs="map")` | `list[Polygon]` | shapely 도형. `crs="lonlat"`이면 경위도 |
+| `footprint_names` | `list[str]` | `footprints()`와 같은 순서의 영상 이름 |
+
+`quicklook`, `coverage` 속성 이름은 0.1.0 호환을 위해 파일 경로를 돌려줌. 배열은 `read_*()` 또는 풀어서 받음.
 
 ### `AlignResult`
 
@@ -399,10 +454,13 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `num_registered` | `int` | 정합된 영상 수 |
 | `num_points` | `int` | 희소 3D 점 수 |
 | `reprojection_error_px` | `float` | 평균 재투영 오차(px) |
-| `epsg` | `int` | 좌표계 (UTM) |
+| `epsg` | `int` | 좌표계 (`OrthoOptions.epsg`, 없으면 UTM) |
 | `gps_residual_m` | `float` | 카메라 위치와 GPS의 수평 RMS 차이(m) |
 | `warnings` | `list[str]` | 경고 |
 | `raw` | `dict` | `project/align_report.json`과 같음 |
+| `cameras` | `Cameras` | 정렬 직후 카메라 자세 (속성, 처음 쓸 때 읽음) |
+| `points` | `PointCloud` | 정렬 직후 희소 점군 (속성) |
+| `crs` | `pyproj.CRS` | 좌표계 (속성) |
 
 ### `OrthoResult`
 
@@ -421,6 +479,9 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `total_time_s` | `float` | 정렬 + 마지막 정사 모자이크 시간(초) (속성) |
 | `peak_memory_mb` | `float` | 최대 메모리(MB) (속성) |
 | `report` | `dict` | `report.json`과 같음 |
+| `transform`, `crs`, `bounds` | | 정사 모자이크의 지도 좌표 정보 (속성) |
+| `read(*, scale=1.0, bounds=None, order="RGBA")` | `(image, transform, crs)` | 정사 모자이크 읽기 |
+| `read_dsm(*, scale=1.0, bounds=None)` | `(z, transform, crs)` | DSM 읽기 (정사 모자이크와 해상도·범위가 다름) |
 
 ### `RefineResult`
 
@@ -436,6 +497,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `raw` | `dict` | `report.json`의 `refine` 항목 |
 
 `dx`, `dy`, `dz`는 **추정 위치 - 측량 위치**(m)이며, 삼각측량할 수 없는 점은 `None`임.
+`residuals` 속성은 같은 값을 `(N, 3)` 배열로 돌려줌 (없는 값은 NaN).
 
 ---
 
@@ -554,6 +616,7 @@ QuickOrthoError            (모든 SDK 예외의 기반, Exception 상속)
 | 예외 | code | 뜻 | HTTP 예시 |
 |---|---|---|---|
 | `InputError` | `folder_not_found` | 영상 폴더 없음 | 404 |
+| `InputError` | `file_not_found` | (래스터 읽기) 파일 없음 | 404 |
 | `InputError` | `no_images` | JPG 영상 없음 | 422 |
 | `InputError` | `too_few_images` | 처리 대상 영상 3장 미만 | 422 |
 | `InputError` | `too_few_gps` | GPS 있는 영상 3장 미만 | 422 |
@@ -561,13 +624,13 @@ QuickOrthoError            (모든 SDK 예외의 기반, Exception 상속)
 | `InputError` | `image_dir_missing` | 정렬 후 원본 영상 폴더가 없어짐 | 409 |
 | `InputError` | `empty_file` | GCP 파일이 비어 있음 | 422 |
 | `InputError` | `invalid_edits` | 보정 수정 사항 형식 오류 | 422 |
-| `InputError` | `invalid_argument` | 인자 오류 (GCP 열·좌표계를 정할 수 없음 등) | 400 |
+| `InputError` | `invalid_argument` | 인자·옵션 오류 (옵션 값, 없는 외부 DSM, `scale`·`order`, GCP 열·좌표계를 정할 수 없음 등) | 400 |
 | `AlignmentError` | `sfm_failed` | 정합 영상 3장 미만 | 422 |
 | `AlignmentError` | `georef_too_few` | GPS 있는 정합 영상 3장 미만 | 422 |
 | `AlignmentError` | `georef_mismatch` | GPS와 SfM 배치 불일치 | 422 |
-| `ProcessingError` | `dsm_failed` | 유효한 3D 점 부족 | 422 |
+| `ProcessingError` | `dsm_failed` | `sparse`에서 유효한 3D 점 10개 미만, `plane`·외부 DSM에서 3D 점이 없는데 `dsm_z` 없음, 외부 DSM이 촬영 범위를 덮지 않음 | 422 |
 | `ProjectError` | `not_aligned` | 정렬 결과 없음 | 409 |
-| `ProjectError` | `not_rendered` | (predict) 정사 모자이크·DSM 없음 | 409 |
+| `ProjectError` | `not_rendered` | 정사 모자이크·DSM 없음 (`read_orthomosaic`, `read_dsm`, `predict`, `z` 없는 `image_to_ground`) | 409 |
 | `Cancelled` | `cancelled` | 중단됨 | 499 |
 
 SDK 예외가 아닌 예외(`OSError`, `MemoryError` 등)는 그대로 올라감. 디스크 부족·권한 문제 등이 여기에 해당함.
@@ -603,3 +666,60 @@ COLMAP 내부 로그는 오류(ERROR) 수준만 출력되며, 표준 출력이 �
 - 공개 API 범위: `quickortho.__all__`의 이름, 이 문서에 적은 인자·속성, 예외 `code` 값, `report.json`의 `report_version` 1 형식,
   serve 프로토콜 버전 1
 - 보고서·결과 dict에 **키가 추가되는 것**은 호환성 변경으로 보지 않음. 읽는 쪽은 모르는 키를 무시해야 함
+
+---
+
+## 11. 산출물 데이터
+
+사용 예와 좌표 규약은 [산출물을 변수로 쓰기](outputs.md)에 자세히 정리함.
+
+### `read_orthomosaic(target, *, scale=1.0, bounds=None, order="RGBA") -> (image, transform, crs)`
+
+| 인자 | 설명 |
+|---|---|
+| `target` | 워크스페이스 폴더 또는 `orthomosaic.tif` 경로 |
+| `scale` | 읽을 배율 (0 < scale ≤ 1). COG 오버뷰를 씀 |
+| `bounds` | 지도 좌표 범위 `(xmin, ymin, xmax, ymax)`만 읽음. 결과 밖은 0 |
+| `order` | `"RGBA"`, `"RGB"`, `"BGRA"`, `"BGR"` |
+
+- `image`: `(H, W, C)` uint8, `transform`: `affine.Affine`(읽은 배열 기준), `crs`: `pyproj.CRS`
+- 예외: `ProjectError`(`not_rendered`), `InputError`(`invalid_argument`: 잘못된 scale·order, `file_not_found`: 경로로 준 파일이 없음)
+
+### `read_dsm(target, *, scale=1.0, bounds=None) -> (z, transform, crs)`
+
+`z`는 `(H, W)` float32 (m).
+
+### `read_raster(path, *, scale=1.0, bounds=None, channels_last=True) -> (array, transform, crs)`
+
+아무 GeoTIFF나 같은 방식으로 읽는 저수준 함수. 밴드가 1개면 `(H, W)`, 여러 개면 `(H, W, 밴드)`
+(`channels_last=False`면 `(밴드, H, W)`).
+
+### `CameraPose`
+
+정합된 영상 한 장의 내부·외부표정. 필드 `name`, `width`, `height`, `model`, `params`, `K`, `dist`, `R`, `t`, `center`, `epsg`와
+속성 `rvec`, `opk`, `P`, 메서드 `project(xyz)`, `in_image(uv)`, `rays(uv)`, `to_camera(xyz)`, `to_dict()`.
+표와 규약은 [산출물을 변수로 쓰기 3절](outputs.md#3-카메라-camerapose) 참고.
+
+- `K`, `dist`는 OpenCV 화소 규약(좌상단 화소 중심 = (0, 0)), 그 밖의 사진 좌표는 SDK 규약(좌상단 화소 중심 = (0.5, 0.5))
+- 지원 카메라 모델: `SIMPLE_PINHOLE`, `PINHOLE`, `SIMPLE_RADIAL`, `RADIAL`, `OPENCV`, `FULL_OPENCV` (SDK의 SfM은 `OPENCV`를 씀)
+
+### `Cameras`
+
+`CameraPose` 목록(`list` 상속). `cameras["DJI_0013.JPG"]`처럼 이름으로도 찾음.
+속성 `names`, `centers` (N, 3), `opk` (N, 3), 메서드 `to_csv(path)`.
+
+### `PointCloud`
+
+필드 `xyz` (N, 3) float64, `rgb` (N, 3) uint8, `error` (N,) float32, `track_length` (N,) int32, `ids` (N,) int64, `epsg`.
+풀면 `xyz, rgb`. 메서드 `filter(max_error_px=None, min_track_length=None)`, `to_ply(path)`(이진 PLY, double 좌표).
+
+### `rotation_from_opk(omega, phi, kappa) -> ndarray`
+
+ω, φ, κ(도) → R (지도 → 카메라, 3×3). `CameraPose.opk`의 역변환.
+
+### `doctor(path=".") -> dict`
+
+설치 환경 진단. `{"ok": bool, "sdk": 버전, "checks": [{"name", "ok", "detail"}]}`.
+확인 항목: Python·OS 지원 범위, 라이브러리 버전(pycolmap CUDA 여부 포함), 좌표 변환, CPU·메모리(부족하면 경고만),
+`path`의 디스크 여유(5GB 미만 실패)·쓰기 권한, 기능 시험(COG 쓰기·읽기, SQLite, 특징점 추출).
+명령줄 `quickortho doctor [path]`와 같음.

@@ -70,6 +70,19 @@ print(result.report["sfm"])   # 정합 영상 수, 재투영 오차 등
 
 각 파일의 자세한 형식은 [결과물과 보고서](report.md)를 참고함.
 
+### 결과를 변수로 받기
+
+결과를 여러 변수로 풀면 정사 모자이크 배열과 좌표 정보가 바로 나옴. numpy·OpenCV·rasterio 등에 그대로 넘길 수 있음.
+
+```python
+image, transform, crs = qo.process("flight_0925", "flight_0925_out")
+print(image.shape)          # (3688, 3811, 4)  RGBA uint8
+x, y = transform * (0, 0)   # 왼쪽 위 모서리의 지도 좌표
+print(crs.to_epsg())        # 32652
+```
+
+카메라 자세·점군·사진 좌표 변환은 [산출물을 변수로 쓰기](outputs.md)를 참고함.
+
 ## 4. 단계별로 처리하기
 
 실제 업무에서는 단계를 나눠 쓰는 경우가 많음. 예를 들어 현장에서는 누락만 먼저 확인하고,
@@ -129,7 +142,10 @@ except qo.QuickOrthoError as exc:   # 그 밖의 SDK 오류
 
 파이썬 코드 없이 명령줄에서도 같은 처리를 할 수 있음. 출력은 한 줄에 JSON 하나씩임.
 
+터미널에서 실행하면 진행 막대와 요약이 나오고, 다른 프로그램이 읽으면(파이프) 한 줄에 JSON 하나씩 나옴.
+
 ```bash
+quickortho doctor                                      # 설치 환경 진단
 quickortho preview flight_0925 -o flight_0925_out/preview
 quickortho ortho flight_0925 -o flight_0925_out --gsd-scale 2
 quickortho render flight_0925_out --gsd-scale 1       # 정렬 없이 해상도만 바꿔 다시 생성

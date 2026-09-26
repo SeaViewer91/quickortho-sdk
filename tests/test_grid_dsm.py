@@ -97,3 +97,32 @@ def test_external_dsm_with_datum_offset(workspace, scene, tmp_path):
 
     with pytest.raises(qo.InputError):
         p.orthomosaic(qo.OrthoOptions(dsm=str(tmp_path / "없음.tif")))
+
+
+def test_refine_crs_change_drops_old_grid(workspace, scene):
+    from test_api import GCP_XY, _synthetic_gcps
+
+    p = qo.Project.open(workspace)
+    b = p.result().bounds
+    p.orthomosaic(qo.OrthoOptions(gsd_scale=4, bounds=(b[0] + 5, b[1] + 5, b[2] - 5, b[3] - 5)))
+    cam_before = p.cameras()[0].center.copy()
+    p.ground_to_image(p.cameras()[0].name, cam_before[None] + [0, 0, -50])  # 카메라 캐시 채움
+    gcps = _synthetic_gcps(scene, GCP_XY, check=("C1", "C2"))
+    tr = Transformer.from_crs(32652, 5187, always_xy=True)
+    for g in gcps:
+        g.x, g.y = tr.transform(g.x, g.y)
+        g.epsg = 5187
+    p.set_edits(gcps=gcps)
+    rr = p.refine()
+    assert rr.ortho.epsg == 5187 and any("bounds" in w for w in rr.warnings)
+    assert rr.check["rmse_xy"] < 0.15
+    # 카메라 캐시가 보정 결과를 따라감 (좌표계가 바뀌었으므로 위치 값이 달라짐)
+    assert p.ground_to_image(p.cameras()[0].name, p.cameras()[0].center[None] + [0, 0, -50]).shape == (1, 2)
+    assert np.abs(p._camera(p.cameras()[0].name).center - cam_before).max() > 1000
+
+
+def test_cli_arg_error_exit_code(workspace, capsys):
+    from quickortho.cli import main
+
+    assert main(["export", str(workspace)]) == 2
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["code"] == "invalid_argument"

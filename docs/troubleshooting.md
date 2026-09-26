@@ -55,14 +55,31 @@ RANSAC(허용 오차 10m)으로 GPS와 카메라 배치를 맞추지 못함.
 - GPS가 크게 튄 영상이 많은 경우 (실내 이륙, 전파 방해)
 - 한 줄로만 비행해 카메라가 일직선에 가까우면 회전이 정해지지 않을 수 있음 → 두 줄 이상 비행
 
-### `dsm_failed` — 유효한 3D 점 부족
+### `dsm_failed` — DSM을 만들 수 없음
 
-재투영 오차 2px 이하·관측 3장 이상인 3D 점이 10개 미만임. 정합 품질이 매우 낮은 경우이므로 `sfm_failed`와 같은 조치를 함.
+- `dsm="sparse"`(기본): 재투영 오차 2px 이하·관측 3장 이상인 3D 점이 10개 미만임. 정합 품질이 매우 낮은 경우이므로
+  `sfm_failed`와 같은 조치를 하거나, 수면 등 특징점이 없는 곳이면 `dsm="plane", dsm_z=...`로 평면을 씀
+- `dsm="plane"`·외부 DSM: 3D 점이 하나도 없어 지면 높이를 정할 수 없음 → `dsm_z`를 지정함
+- 외부 DSM: 촬영 범위를 전혀 덮지 않음 → 좌표계 정보와 범위를 확인함
+
+### `file_not_found` — 파일 없음
+
+`qo.read_raster()`, `qo.read_orthomosaic("…/파일.tif")` 등에 준 파일이 없음.
 
 ### `not_aligned` — 정렬 결과 없음
 
 - `Project.open()`에 정렬하지 않은 폴더를 줌 → `Project.create()` 후 `align()` 또는 `process()`
 - 워크스페이스 경로가 결과 폴더의 상위 폴더인지 확인함 (데스크톱 앱 결과는 `<영상 폴더>_QuickOrtho/ortho/`를 지정)
+
+### `not_rendered` — 정사 모자이크·DSM 없음
+
+`read_orthomosaic()`, `read_dsm()`, `predict()`, `z` 없는 `image_to_ground()`는 정사 모자이크(DSM)가 필요함.
+정렬만 했다면 `orthomosaic()`을 먼저 실행함.
+
+### `invalid_argument` — 옵션 값 오류
+
+`OrthoOptions`의 값이 잘못됨: GSD 0 이하, 경위도 EPSG(4326 등)를 결과 좌표계로 지정, `bounds`의 최솟값이 최댓값보다 큼,
+없는 외부 DSM 경로, 지원하지 않는 채널 순서 등. 메시지에 문제 항목이 나옴.
 
 ### `image_dir_missing` — 원본 영상 폴더 없음
 
@@ -105,6 +122,11 @@ SDK 예외가 아닌 예외임. `error` 이벤트의 `detail`(스택 트레이�
 | 재투영 오차가 2px 넘음 | 흐림·롤링 셔터·움직이는 물체 | `tiepoint_stats()`로 분석 후 오차 큰 관측 정리 |
 
 ## 3. 설치·실행 문제
+
+### 먼저 `quickortho doctor`
+
+설치·실행 문제는 `quickortho doctor <작업 폴더>`로 먼저 진단함. 라이브러리 버전, 좌표 변환, 메모리·디스크, 쓰기 권한,
+특징점 추출까지 한 번에 확인하고, 문제 항목을 ✗로 표시함.
 
 ### pip 설치 중 `No matching distribution found for pycolmap`
 

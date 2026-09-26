@@ -39,7 +39,7 @@ class QuickOrthoError(Exception):
 class InputError(QuickOrthoError):
     """입력이 처리 조건을 만족하지 않음.
 
-    code 값: ``folder_not_found``, ``no_images``, ``too_few_images``, ``too_few_gps``, ``no_gps``,
+    code 값: ``folder_not_found``, ``file_not_found``, ``no_images``, ``too_few_images``, ``too_few_gps``, ``no_gps``,
     ``image_dir_missing``, ``empty_file``, ``invalid_edits``, ``invalid_argument``
     """
 

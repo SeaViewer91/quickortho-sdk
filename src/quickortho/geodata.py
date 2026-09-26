@@ -66,7 +66,7 @@ def read_raster(
         raise InputError("scale은 0보다 크고 1 이하여야 함", "invalid_argument")
     p = Path(path).expanduser()
     if not p.exists():
-        raise InputError(f"파일이 없음: {p}", "folder_not_found")
+        raise InputError(f"파일이 없음: {p}", "file_not_found")
     with rasterio.open(p) as ds:
         if bounds is not None:
             win = from_bounds(*bounds, transform=ds.transform).round_offsets().round_lengths()

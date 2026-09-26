@@ -1,6 +1,6 @@
 # QuickOrtho SDK 문서
 
-대상 버전: 0.1.0
+대상 버전: 0.2.0 (개발 중)
 
 ## 처음 쓰는 경우
 
@@ -11,6 +11,7 @@
 ## 개발할 때
 
 - [API 레퍼런스](api-reference.md): 모든 공개 클래스·함수·옵션·결과·예외
+- [산출물을 변수로 쓰기](outputs.md): 결과 풀기, 래스터·카메라·점군, 좌표 규약, 다른 라이브러리 연동
 - [진행률과 중단](events-and-cancel.md): 이벤트 콜백, CancelToken, GUI·웹 서버 구성 방식
 - [정밀 보정](refinement.md): GCP·타이포인트 보정, 수정 사항 형식
 - [결과물과 보고서](report.md): 결과 파일, `report.json`·`preview.json` 필드
@@ -40,4 +41,5 @@
 
 ## 릴리스 노트
 
+- [v0.2.0 (개발 중)](release-notes/v0.2.0.md)
 - [v0.1.0](release-notes/v0.1.0.md)

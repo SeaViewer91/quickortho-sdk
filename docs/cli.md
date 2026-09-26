@@ -9,11 +9,43 @@ SDK를 설치하면 `quickortho` 명령이 생김 (`quickortho-engine`은 데스
 - 파이썬이 아닌 언어(Node.js, C#, Go 등)에서 프로세스로 호출
 - 상주 모드(`serve`)로 띄워 두고 여러 작업을 차례로 처리
 
-## 1. 출력 규칙 (JSON-lines)
+## 1. 출력 형식
 
-- 모든 명령은 표준 출력에 **한 줄에 JSON 객체 하나**씩 이벤트를 씀 (UTF-8)
-- 사람이 읽는 로그가 아니므로 결과는 `result` 이벤트의 `data`에서 읽음
-- 종료 코드: `0` 성공, `1` 처리 실패(`error` 이벤트 출력), `2` 인자 오류
+`--format`으로 고름. 명령줄 어느 위치에 써도 됨 (`quickortho --format text ortho ...`, `quickortho ortho ... --format=text`).
+환경변수 `QUICKORTHO_FORMAT`으로 기본값을 바꿀 수 있음.
+
+| 값 | 출력 |
+|---|---|
+| `auto` (기본) | 표준 출력이 **터미널이면 `text`, 파이프·파일이면 `json`** |
+| `text` | 사람용: 단계, 진행 막대, 결과 요약. 오류는 표준 오류로 `오류 [code]: 메시지` |
+| `json` | 프로그램용: 한 줄에 JSON 이벤트 하나 (아래 표) |
+
+다른 프로그램에서 호출하면 표준 출력이 파이프이므로 자동으로 `json`이 됨. 확실히 하려면 `--format json`을 붙임.
+`serve`는 항상 `json`임.
+
+`text` 출력 예:
+
+```text
+$ quickortho ortho flight_0925 -o out
+[00:00] ▶ 영상 13장 스캔 시작
+      [████████████████████████████████████████] 100%  13/13
+[00:00] ▶ 특징점 추출 (13장)
+      [██████████████████······················]  46%  6/13
+...
+  정합           13/13장, 재투영 0.88 px
+  좌표계         EPSG:32652
+  GSD            7.9 cm
+  크기           3811 × 3688 px
+  시간           41초, 최대 메모리 0.76 GB
+  정사 모자이크  out/orthomosaic.tif
+```
+
+### JSON-lines 규칙
+
+- 표준 출력에 **한 줄에 JSON 객체 하나**씩 이벤트를 씀 (UTF-8)
+- 결과는 `result` 이벤트의 `data`에서 읽음
+- 종료 코드: `0` 성공, `1` 처리 실패(`error` 이벤트 출력), `2` 인자 오류 (`text`·`json` 모두 같음).
+  `doctor`는 실패 항목이 있으면 `error` 이벤트 없이 결과(`ok: false`)를 출력하고 `1`로 끝남
 - COLMAP 내부 로그 등 그 밖의 출력은 표준 오류로 나감
 
 | `type` | 필드 | 뜻 |
@@ -48,6 +80,8 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | 명령 | SDK 대응 | `result.data` |
 |---|---|---|
 | `version` | `qo.__version__` | `{"engine", "sdk", "protocol", "python", "os", "arch"}` |
+| `doctor [폴더]` | `qo.doctor()` | 환경 진단 `{"ok", "sdk", "checks"}`. 실패 항목이 있으면 종료 코드 1 |
+| `export <워크스페이스> [--cameras-csv 파일] [--cameras-json 파일] [--points-ply 파일]` | `cameras().to_csv()` 등 | 쓴 파일 경로 |
 | `scan <폴더> [--recursive]` | `qo.scan()` | `ScanResult.raw` |
 | `preview <폴더> -o <결과 폴더>` | `qo.preview()` | `preview.json` 내용 |
 | `ortho <폴더> -o <워크스페이스>` | `Project.create().process()` | `report.json` 내용 |
@@ -82,6 +116,15 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | `--max-features` | 4096 | ortho, align | 영상당 최대 특징점 수 |
 | `--threads` | -1 | ortho, align | 스레드 수 (-1은 전체) |
 | `--keep-work` | 끔 | ortho, align | 중간 산출물 보존 |
+| `--epsg` | 없음 | ortho, align | 결과 좌표계 EPSG (투영 좌표계, 기본 UTM) |
+| `--bounds XMIN YMIN XMAX YMAX` | 없음 | ortho, render | 결과 범위 (결과 좌표계) |
+| `--grid-origin X Y` | 0 0 | ortho, render | 화소 격자 기준점 |
+| `--dsm` | sparse | ortho, render | `sparse`, `plane`, 또는 외부 DSM GeoTIFF 경로 |
+| `--dsm-z` | 없음 | ortho, render | `--dsm plane`의 높이(m) |
+| `--no-dsm-vertical-align` | 끔 | ortho, render | 외부 DSM 높이 기준 자동 보정 끄기 |
+
+`export`: 카메라 CSV는 `name,x,y,z,omega,phi,kappa`, JSON은 영상별 `K`, `dist`, `R`, `t`, `center`, `opk_deg` 등 전체,
+PLY는 희소 점군(좌표 double, 색 포함). 형식은 [산출물을 변수로 쓰기](outputs.md) 참고.
 
 `predict --spec` JSON: `{"marks": [{"image", "x", "y"}], "world": {"x", "y", "z", "epsg", "z_from_dsm"}, "chips": true}`
 
@@ -103,6 +146,19 @@ quickortho render /data/flight_out --gsd-scale 1
 
 # 서버 사양에 맞춰 품질 높이기
 quickortho ortho /data/flight -o /data/flight_out --max-image-size 3200 --max-features 8192
+
+# 국내 좌표계, 고정 격자 (시기별 비교용)
+quickortho ortho /data/flight -o /data/out_0925 --epsg 5186 --gsd 0.05 --bounds 204000 336000 204600 336500
+
+# 수면 위주 영상: 해수면 높이 평면으로 정사투영
+quickortho render /data/flight_out --dsm plane --dsm-z 0
+
+# 외부 DEM 사용
+quickortho render /data/flight_out --dsm /data/dem_5m.tif
+
+# 카메라 자세·점군 내보내기, 환경 진단
+quickortho export /data/flight_out --cameras-csv cams.csv --points-ply points.ply
+quickortho doctor /data
 ```
 
 Windows PowerShell에서 JSON 인자는 작은따옴표로 감쌈.

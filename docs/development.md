@@ -23,6 +23,9 @@ src/quickortho/
 ├── options.py         OrthoOptions, SfmOptions, PreviewOptions
 ├── results.py         결과 객체
 ├── events.py          Event, CancelToken, print_progress
+├── geodata.py         산출물 데이터: read_orthomosaic, CameraPose, Cameras, PointCloud
+├── doctor.py          환경 진단
+├── textout.py         명령줄 사람용 출력 (--format text)
 ├── gcp.py             GCP, Mark, TiePoint, load_gcps
 ├── errors.py          예외
 ├── cli.py             명령줄·serve
@@ -42,6 +45,8 @@ tests/
 ├── synthetic.py       합성 드론 영상 생성기
 ├── conftest.py        공통 fixture (합성 영상 세트, 처리된 워크스페이스)
 ├── test_api.py        공개 API 전체 흐름 시험
+├── test_outputs.py    산출물 변수·카메라·좌표 변환·CLI 시험
+├── test_grid_dsm.py   출력 좌표계·격자 고정·평면/외부 DSM 시험
 └── test_*.py          코어 단위 시험
 examples/              예제
 docs/                  문서, 릴리스 노트
