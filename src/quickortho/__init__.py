@@ -22,8 +22,10 @@ from .errors import (
     ProjectError,
     QuickOrthoError,
 )
+from .doctor import run_doctor as doctor
 from .events import STAGES, CancelToken, Event, EventCallback, print_progress
 from .gcp import GCP, Mark, TiePoint, load_gcps, read_gcp_file
+from .geodata import CameraPose, Cameras, PointCloud, read_dsm, read_orthomosaic, read_raster, rotation_from_opk
 from .options import OrthoOptions, PreviewOptions, SfmOptions
 from .project import Project, preview, process, scan
 from .results import AlignResult, OrthoResult, PreviewResult, RefineResult, ScanResult
@@ -39,6 +41,14 @@ __all__ = [
     "OrthoOptions",
     "SfmOptions",
     "PreviewOptions",
+    # 산출물 데이터
+    "CameraPose",
+    "Cameras",
+    "PointCloud",
+    "read_orthomosaic",
+    "read_dsm",
+    "read_raster",
+    "rotation_from_opk",
     # 결과
     "ScanResult",
     "PreviewResult",
@@ -57,6 +67,8 @@ __all__ = [
     "TiePoint",
     "load_gcps",
     "read_gcp_file",
+    # 진단
+    "doctor",
     # 예외
     "QuickOrthoError",
     "InputError",

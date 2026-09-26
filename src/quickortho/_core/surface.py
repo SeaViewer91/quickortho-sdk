@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pycolmap
@@ -56,6 +57,7 @@ def georeference(
     rec: pycolmap.Reconstruction,
     gps: dict[str, tuple[float, float, float]],
     ransac_max_error_m: float = 10.0,
+    epsg: int | None = None,
 ) -> GeoResult:
     """SfM 재구성을 GPS 기준 UTM 좌표(절대값)로 옮긴다.
 
@@ -64,7 +66,7 @@ def georeference(
     """
     lon = np.array([v[0] for v in gps.values()])
     lat = np.array([v[1] for v in gps.values()])
-    proj = UtmProjector(float(np.median(lon)), float(np.median(lat)))
+    proj = Projector(epsg) if epsg else UtmProjector(float(np.median(lon)), float(np.median(lat)))
     e, n_ = proj.forward(lon, lat)
     # UTM 좌표는 값이 커서 수치 안정성을 위해 원점 이동 후 정렬하고, 이후 다시 더한다
     origin = np.array([round(float(np.median(e))), round(float(np.median(n_))), 0.0])
@@ -144,6 +146,58 @@ def build_dsm(
     # 급격한 높이 변화는 정사영상에 번짐을 만들므로 한 번 더 부드럽게 만든다
     z = ndimage.gaussian_filter(z, sigma=1.0, mode="nearest")
     return Dsm(z=z.astype(np.float32), x0=float(gx[0]), y0=float(gy[0]), res=res, num_points=len(pts))
+
+
+def plane_dsm(z: float, bounds: tuple[float, float, float, float], res: float, num_points: int = 0) -> Dsm:
+    """높이 z의 수평면 DSM (수면 등 특징점이 없는 곳, 평탄지)."""
+    xmin, ymin, xmax, ymax = bounds
+    cols = max(2, int(np.ceil((xmax - xmin) / res)) + 1)
+    rows = max(2, int(np.ceil((ymax - ymin) / res)) + 1)
+    return Dsm(z=np.full((rows, cols), float(z), np.float32), x0=float(xmin), y0=float(ymax), res=res,
+               num_points=num_points)
+
+
+def external_dsm(
+    path, bounds: tuple[float, float, float, float], res: float, epsg: int, pts: np.ndarray | None
+) -> tuple[Dsm, float]:
+    """외부 DSM/DEM 래스터를 결과 격자로 재투영해 DSM을 만든다.
+
+    pts(희소 점군)를 주면 두 높이의 중앙값 차이만큼 외부 DSM을 올리거나 내려 높이 기준을 맞춘다.
+    외부 자료가 없는 곳은 부드럽게 외삽해 채운다. 반환: (DSM, 적용한 높이 보정량 m)
+    """
+    import rasterio
+    from rasterio.transform import from_origin
+    from rasterio.warp import Resampling, reproject
+
+    from ..errors import InputError
+
+    path = Path(path).expanduser()
+    if not path.exists():
+        raise InputError(f"외부 DSM 파일이 없음: {path}", "invalid_argument")
+    xmin, ymin, xmax, ymax = bounds
+    cols = max(2, int(np.ceil((xmax - xmin) / res)) + 1)
+    rows = max(2, int(np.ceil((ymax - ymin) / res)) + 1)
+    z = np.full((rows, cols), np.nan, np.float32)
+    with rasterio.open(path) as src:
+        if src.crs is None:
+            raise InputError(f"외부 DSM에 좌표계 정보가 없음: {path}", "invalid_argument")
+        reproject(
+            source=rasterio.band(src, 1), destination=z,
+            src_transform=src.transform, src_crs=src.crs, src_nodata=src.nodata,
+            dst_transform=from_origin(xmin - res / 2, ymax + res / 2, res, res), dst_crs=f"EPSG:{epsg}",
+            dst_nodata=np.nan, resampling=Resampling.bilinear,
+        )
+    if np.isnan(z).all():
+        from ..errors import ProcessingError
+
+        raise ProcessingError("외부 DSM이 촬영 범위를 덮지 않음", "dsm_failed")
+    z = _fill_smooth(z.astype(np.float64)).astype(np.float32)
+    dsm = Dsm(z=z, x0=float(xmin), y0=float(ymax), res=res, num_points=0 if pts is None else len(pts))
+    offset = 0.0
+    if pts is not None and len(pts) >= 3:
+        offset = float(np.median(pts[:, 2] - dsm.sample(pts[:, 0], pts[:, 1])))
+        dsm.z += np.float32(offset)
+    return dsm, offset
 
 
 def _fill_smooth(z: np.ndarray) -> np.ndarray:

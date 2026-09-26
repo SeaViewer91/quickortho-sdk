@@ -26,7 +26,7 @@ def _sha(p: Path) -> str:
 def test_public_names_importable():
     for name in qo.__all__:
         assert hasattr(qo, name), name
-    assert qo.__version__.count(".") == 2
+    assert __import__("re").match(r"^\d+\.\d+\.\d+(\.dev\d+|a\d+|b\d+|rc\d+)?$", qo.__version__)
 
 
 def test_scan_and_preview(scene, tmp_path):

@@ -355,6 +355,21 @@ def _dst_bbox(dst: np.ndarray, W: int, H: int) -> tuple[int, int, int, int]:
     return x0, y0, x1, y1
 
 
+def _write_coverage_tif(grid, gaps, bounds, cell: float, epsg: int, path: Path) -> None:
+    """중복 매수 격자를 GeoTIFF로 쓴다. 밴드 1: 중복 매수(uint16), 밴드 2: 누락 구역(1)."""
+    import rasterio
+    from rasterio.transform import from_origin
+
+    with rasterio.open(
+        path, "w", driver="GTiff", width=grid.shape[1], height=grid.shape[0], count=2, dtype="uint16",
+        crs=f"EPSG:{epsg}", transform=from_origin(bounds[0], bounds[3], cell, cell), compress="deflate",
+    ) as ds:
+        ds.write(grid.astype(np.uint16), 1)
+        ds.write(gaps.astype(np.uint16), 2)
+        ds.set_band_description(1, "overlap_count")
+        ds.set_band_description(2, "gap")
+
+
 def colorize_coverage(grid: np.ndarray, gaps: np.ndarray) -> np.ndarray:
     """중복 매수를 색으로 표시한다: 1장 빨강, 2장 주황, 3~4장 노랑, 5장 이상 초록, 누락 보라."""
     rgba = np.zeros(grid.shape + (4,), np.uint8)
@@ -414,6 +429,7 @@ def run_preview(
         quicklook_path = out_dir / "quicklook.png"
         Image.fromarray(quick, "RGBA").save(quicklook_path, compress_level=1)
     Image.fromarray(colorize_coverage(grid, gaps_mask), "RGBA").save(out_dir / "coverage.png", compress_level=1)
+    _write_coverage_tif(grid, gaps_mask, bounds, cell, proj.epsg, out_dir / "coverage.tif")
 
     # WGS84 변환 (GeoJSON, 지도 오버레이용 네 모서리)
     inv = Transformer.from_crs(proj.epsg, 4326, always_xy=True)
@@ -455,6 +471,7 @@ def run_preview(
         "epsg": proj.epsg,
         "corners_lonlat": [[float(a), float(b)] for a, b in zip(lons, lats)],
         "cell_m": cell,
+        "bounds": [float(v) for v in (bounds[0], bounds[3] - grid.shape[0] * cell, bounds[0] + grid.shape[1] * cell, bounds[3])],
         "coverage": {k: round(v, 2) for k, v in cov.items()},
         "forward_overlap_median": round(float(np.median(fwd)), 3) if fwd else None,
         "flight_height_m": {"min": min(p.h for p in poses), "max": max(p.h for p in poses)},
@@ -462,6 +479,7 @@ def run_preview(
         "outputs": {
             "quicklook": str(quicklook_path) if quicklook_path else None,
             "coverage": str(out_dir / "coverage.png"),
+            "coverage_tif": str(out_dir / "coverage.tif"),
             "geojson": str(geojson_path),
         },
         "warnings": warnings + (["롤링 셔터 카메라 포함"] if scan["summary"]["rolling_shutter_warning"] else []),

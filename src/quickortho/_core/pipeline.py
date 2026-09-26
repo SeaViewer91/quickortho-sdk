@@ -25,7 +25,7 @@ from .project import Project, to_absolute
 from .protocol import Emitter
 from .scan import scan_folder
 from .sfm import run_sfm
-from .surface import build_dsm, georeference, remove_z_outliers, sparse_points
+from .surface import build_dsm, external_dsm, georeference, plane_dsm, remove_z_outliers, sparse_points
 
 
 class PeakMemory:
@@ -113,7 +113,7 @@ def run_align(
             # 2) 좌표 정렬
             t0 = time.perf_counter()
             out.stage("georef", "GPS로 좌표 정렬 (UTM)")
-            geo = georeference(rec, gps)
+            geo = georeference(rec, gps, epsg=opts.epsg)
             out.log(f"좌표계 EPSG:{geo.projector.epsg}, GPS 잔차(RMS, 수평) {geo.gps_residual_m:.2f} m")
             timings["georef_s"] = time.perf_counter() - t0
 
@@ -175,7 +175,7 @@ def run_render(
     timings: dict[str, float] = {}
     with PeakMemory() as mem:
         products = render_products(rec_abs, image_dir, proj.ortho_dir, epsg, opts, out, timings)
-    proj.update_render({"gsd_m": opts.gsd_m, "gsd_scale": opts.gsd_scale, "cache_budget_mb": opts.cache_budget_mb})
+    proj.update_render(opts.render_dict())
     timings["render_total_s"] = time.perf_counter() - t_start
     return compose_report(proj, products, timings, mem.peak)
 
@@ -240,19 +240,41 @@ def render_products(
     """
     crs = CRS.from_epsg(epsg)
     t0 = time.perf_counter()
-    out.stage("dsm", "희소 점군으로 간이 DSM 생성")
+    mode = str(opts.dsm)
+    kind = mode if mode in ("sparse", "plane") else "external"
+    out.stage("dsm", {"sparse": "희소 점군으로 간이 DSM 생성", "plane": "수평면 DSM 생성",
+                      "external": "외부 DSM 불러오기"}[kind])
     pts = remove_z_outliers(sparse_points(rec))
-    if len(pts) < 10:
+    if kind == "sparse" and len(pts) < 10:
         raise ProcessingError("DSM 생성 실패: 유효한 3D 점이 너무 적음", "dsm_failed")
-    ground_z = float(np.median(pts[:, 2]))
+    if kind == "plane" and opts.dsm_z is not None:
+        ground_z = float(opts.dsm_z)
+    elif len(pts):
+        ground_z = float(np.median(pts[:, 2]))
+    else:
+        raise ProcessingError("DSM 생성 실패: 3D 점이 없어 지면 높이를 정할 수 없음 (dsm_z 지정 필요)", "dsm_failed")
     views = build_views(rec, ground_z)
     src_gsd = native_gsd(views, ground_z)
     gsd = opts.gsd_m or src_gsd * opts.gsd_scale
-    vb = np.array([v.bbox for v in views])
-    bounds = _snap_bounds((vb[:, 0].min(), vb[:, 1].min(), vb[:, 2].max(), vb[:, 3].max()), gsd)
+    if opts.bounds is not None:
+        raw_bounds = tuple(float(v) for v in opts.bounds)
+    else:
+        vb = np.array([v.bbox for v in views])
+        raw_bounds = (vb[:, 0].min(), vb[:, 1].min(), vb[:, 2].max(), vb[:, 3].max())
+    bounds = _snap_bounds(raw_bounds, gsd, tuple(opts.grid_origin))
     area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
-    dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
-    dsm = build_dsm(pts, bounds, dsm_res)
+    dsm_info: dict = {"mode": kind}
+    if kind == "sparse":
+        dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
+        dsm = build_dsm(pts, bounds, dsm_res)
+    elif kind == "plane":
+        dsm_res = max(0.5, math.sqrt(area) / 256)
+        dsm = plane_dsm(ground_z, bounds, dsm_res, num_points=len(pts))
+        dsm_info["plane_z"] = ground_z
+    else:
+        dsm_res = max(0.5, gsd, math.sqrt(area) / 4096)
+        dsm, offset = external_dsm(Path(mode), bounds, dsm_res, epsg, pts if opts.dsm_vertical_align else None)
+        dsm_info.update(source=str(Path(mode).expanduser().resolve()), vertical_offset_m=offset)
     out.progress("dsm", 1, 1)  # 중단 확인 지점
     # 결과물은 임시 파일에 쓰고 마지막에 교체한다. 중단·실패 시 이전 결과물이 섞이지 않게 하기 위해서다.
     dsm_tmp = out_dir / "dsm.tmp.tif"
@@ -284,7 +306,7 @@ def render_products(
     corners = _corners_lonlat(final)
     timings["finalize_s"] = time.perf_counter() - t0
     return {
-        "dsm": {"resolution_m": dsm_res, "num_points": dsm.num_points},
+        "dsm": {**dsm_info, "resolution_m": dsm_res, "num_points": dsm.num_points},
         "ortho": {**ortho_stats, "source_gsd_m": src_gsd},
         "outputs": {
             "orthomosaic": str(final),
@@ -302,11 +324,16 @@ def _alt(im: dict) -> float:
     return 0.0
 
 
-def _snap_bounds(b: tuple[float, float, float, float], gsd: float) -> tuple[float, float, float, float]:
-    x0 = math.floor(b[0] / gsd) * gsd
-    y0 = math.floor(b[1] / gsd) * gsd
-    x1 = math.ceil(b[2] / gsd) * gsd
-    y1 = math.ceil(b[3] / gsd) * gsd
+def _snap_bounds(
+    b: tuple[float, float, float, float], gsd: float, origin: tuple[float, float] = (0.0, 0.0)
+) -> tuple[float, float, float, float]:
+    """범위를 바깥쪽으로 넓혀 origin에서 GSD 배수인 위치에 맞춘다 (같은 gsd·origin이면 화소 경계가 겹침)."""
+    ox, oy = float(origin[0]), float(origin[1])
+    eps = 1e-9
+    x0 = ox + math.floor((b[0] - ox) / gsd + eps) * gsd
+    y0 = oy + math.floor((b[1] - oy) / gsd + eps) * gsd
+    x1 = ox + math.ceil((b[2] - ox) / gsd - eps) * gsd
+    y1 = oy + math.ceil((b[3] - oy) / gsd - eps) * gsd
     return (x0, y0, x1, y1)
 
 

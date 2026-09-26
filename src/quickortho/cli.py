@@ -1,7 +1,11 @@
 """명령줄 진입점 (``quickortho``, ``quickortho-engine``).
 
-모든 명령은 stdout으로 JSON-lines 이벤트를 출력함 (형식은 ``docs/cli.md`` 참고).
-명령은 공개 SDK API를 그대로 호출하므로 CLI 결과와 SDK 결과는 같음.
+출력 형식 (``--format``):
+- ``json``: 한 줄에 JSON 이벤트 하나 (프로그램 연동용, 형식은 ``docs/cli.md`` 참고)
+- ``text``: 사람이 읽는 진행 막대와 요약
+- ``auto``(기본): 표준 출력이 터미널이면 ``text``, 파이프·파일이면 ``json``
+
+명령은 공개 SDK API를 그대로 호출하므로 CLI 결과와 SDK 결과는 같음. ``serve``는 항상 JSON.
 """
 
 from __future__ import annotations
@@ -20,10 +24,22 @@ from .errors import QuickOrthoError
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = _Parser(prog="quickortho", description=f"QuickOrtho SDK {__version__} 명령줄 도구")
+    parser = _Parser(
+        prog="quickortho",
+        description=f"QuickOrtho SDK {__version__} 명령줄 도구. 출력 형식은 --format auto|text|json (어느 위치든 가능)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("version", help="SDK 버전과 실행 환경 출력")
+
+    p_doc = sub.add_parser("doctor", help="설치 환경 진단 (라이브러리, CPU·메모리, 디스크, 쓰기 권한, 기능 시험)")
+    p_doc.add_argument("path", type=Path, nargs="?", default=Path("."), help="작업할 폴더 (디스크·쓰기 권한 확인용)")
+
+    p_exp = sub.add_parser("export", help="워크스페이스의 카메라 자세·점군을 파일로 내보내기")
+    p_exp.add_argument("ortho_dir", type=Path, help="워크스페이스")
+    p_exp.add_argument("--cameras-csv", type=Path, default=None, help="카메라 위치·자세 CSV (name,x,y,z,omega,phi,kappa)")
+    p_exp.add_argument("--cameras-json", type=Path, default=None, help="카메라 전체 정보 JSON (K, dist, R, t 포함)")
+    p_exp.add_argument("--points-ply", type=Path, default=None, help="희소 점군 PLY")
 
     p_scan = sub.add_parser("scan", help="영상 폴더의 EXIF/XMP 스캔")
     p_scan.add_argument("folder", type=Path)
@@ -46,17 +62,29 @@ def _build_parser() -> argparse.ArgumentParser:
     def add_render(p: argparse.ArgumentParser) -> None:
         p.add_argument("--gsd", type=float, default=None, help="출력 GSD(m). 기본값은 원본 GSD × --gsd-scale")
         p.add_argument("--gsd-scale", type=float, default=2.0, help="원본 GSD 대비 출력 배율 (기본 2)")
+        p.add_argument("--bounds", type=float, nargs=4, default=None, metavar=("XMIN", "YMIN", "XMAX", "YMAX"),
+                       help="결과 범위 (결과 좌표계)")
+        p.add_argument("--grid-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
+                       help="화소 격자 기준점 (기본 0 0)")
+        p.add_argument("--dsm", default="sparse", help="지형면: sparse(기본), plane, 또는 외부 DSM GeoTIFF 경로")
+        p.add_argument("--dsm-z", type=float, default=None, help="--dsm plane의 평면 높이(m)")
+        p.add_argument("--no-dsm-vertical-align", action="store_true", help="외부 DSM 높이 기준 자동 보정 끄기")
+
+    def add_epsg(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--epsg", type=int, default=None, help="결과 좌표계 EPSG (투영 좌표계, 기본 UTM)")
 
     p_ortho = sub.add_parser("ortho", help="정사 모자이크 생성 (정렬 + 정사 모자이크)")
     p_ortho.add_argument("folder", type=Path, help="영상 폴더")
     p_ortho.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
     add_render(p_ortho)
     add_sfm(p_ortho)
+    add_epsg(p_ortho)
 
     p_align = sub.add_parser("align", help="정렬만 실행 (스캔 → SfM → GPS 좌표 정렬)")
     p_align.add_argument("folder", type=Path, help="영상 폴더")
     p_align.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
     add_sfm(p_align)
+    add_epsg(p_align)
 
     p_render = sub.add_parser("render", help="정렬된 워크스페이스로 정사 모자이크만 다시 생성")
     p_render.add_argument("ortho_dir", type=Path, help="워크스페이스")
@@ -99,6 +127,10 @@ class _RequestError(Exception):
     pass
 
 
+class _DoctorFailed(Exception):
+    """doctor 결과에 실패 항목이 있음 (결과는 이미 출력함)."""
+
+
 class _Parser(argparse.ArgumentParser):
     """serve 모드에서 잘못된 요청이 프로세스를 종료시키지 않도록 예외로 바꾼다."""
 
@@ -114,11 +146,18 @@ def _options(args: argparse.Namespace):
         max_num_features=getattr(args, "max_features", 4096),
         num_threads=getattr(args, "threads", -1),
     )
+    bounds = getattr(args, "bounds", None)
     return OrthoOptions(
         gsd_m=getattr(args, "gsd", None),
         gsd_scale=getattr(args, "gsd_scale", 2.0),
         keep_work=getattr(args, "keep_work", False),
         sfm=sfm,
+        epsg=getattr(args, "epsg", None),
+        bounds=tuple(bounds) if bounds else None,
+        grid_origin=tuple(getattr(args, "grid_origin", (0.0, 0.0))),
+        dsm=getattr(args, "dsm", "sparse"),
+        dsm_z=getattr(args, "dsm_z", None),
+        dsm_vertical_align=not getattr(args, "no_dsm_vertical_align", False),
     )
 
 
@@ -139,6 +178,28 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
             "os": platform.system(),
             "arch": platform.machine(),
         })
+    elif cmd == "doctor":
+        from .doctor import run_doctor
+
+        res = run_doctor(args.path)
+        out.result("doctor", res)
+        if not res["ok"]:
+            raise _DoctorFailed()
+    elif cmd == "export":
+        proj = qo.Project.open(args.ortho_dir)
+        written = {}
+        if args.cameras_csv:
+            written["cameras_csv"] = str(proj.cameras().to_csv(args.cameras_csv))
+        if args.cameras_json:
+            data = {"epsg": None, "cameras": [c.to_dict() for c in proj.cameras()]}
+            data["epsg"] = data["cameras"][0]["epsg"] if data["cameras"] else None
+            Path(args.cameras_json).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            written["cameras_json"] = str(args.cameras_json)
+        if args.points_ply:
+            written["points_ply"] = str(proj.points().to_ply(args.points_ply))
+        if not written:
+            raise _ArgError("--cameras-csv, --cameras-json, --points-ply 중 하나 이상 지정해야 함")
+        out.result("export", written)
     elif cmd == "scan":
         out.result("scan", qo.scan(args.folder, recursive=args.recursive, on_event=on_event).raw)
     elif cmd == "preview":
@@ -181,6 +242,8 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
 
 
 def _report_error(out: Emitter, exc: BaseException) -> None:
+    if isinstance(exc, _DoctorFailed):
+        return
     if isinstance(exc, _ArgError):
         out.error(f"잘못된 인자: {exc}", "", code="invalid_argument")
     elif isinstance(exc, _RequestError):
@@ -244,7 +307,16 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
 
-    out = Emitter()
+    argv = list(sys.argv[1:] if argv is None else argv)
+    fmt, argv = _pop_format(argv)
+    if fmt == "auto":
+        fmt = "text" if sys.stdout.isatty() else "json"
+    if fmt == "text":
+        from .textout import TextEmitter
+
+        out: Emitter = TextEmitter(sys.stdout, sys.stderr)
+    else:
+        out = Emitter()
     try:
         args = _build_parser().parse_args(argv)
     except _ArgError as exc:
@@ -258,3 +330,27 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # 호출 측이 항상 error 이벤트를 받도록 함
         _report_error(out, exc)
         return 1
+
+
+def _pop_format(argv: list[str]) -> tuple[str, list[str]]:
+    """``--format X``/``--format=X``를 어느 위치에서든 빼낸다. 없으면 환경변수 QUICKORTHO_FORMAT, 기본 auto."""
+    import os
+
+    fmt = os.environ.get("QUICKORTHO_FORMAT", "auto")
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--format" and i + 1 < len(argv):
+            fmt = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--format="):
+            fmt = a.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(a)
+        i += 1
+    if fmt not in ("auto", "json", "text"):
+        fmt = "auto"
+    return fmt, rest

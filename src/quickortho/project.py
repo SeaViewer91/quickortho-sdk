@@ -24,6 +24,16 @@ from ._core.scan import scan_folder
 from .errors import InputError, ProjectError
 from .events import CancelToken, EventCallback, make_emitter
 from .gcp import GCP, Mark, TiePoint
+from .geodata import (
+    Bounds,
+    Cameras,
+    ChannelOrder,
+    PointCloud,
+    cameras_from_reconstruction,
+    points_from_reconstruction,
+    read_dsm,
+    read_orthomosaic,
+)
 from .options import OrthoOptions, PreviewOptions
 from .results import AlignResult, OrthoResult, PreviewResult, RefineResult, ScanResult
 
@@ -34,6 +44,34 @@ def _start(on_event: EventCallback | None, cancel: CancelToken | None):
     if cancel is not None:
         cancel.raise_if_cancelled()
     return make_emitter(on_event, cancel)
+
+
+def _check_options(opts: OrthoOptions) -> OrthoOptions:
+    """옵션 값 검증. 잘못되면 InputError(invalid_argument)."""
+    def bad(msg: str):
+        raise InputError(msg, "invalid_argument")
+
+    if opts.gsd_m is not None and opts.gsd_m <= 0:
+        bad("gsd_m은 0보다 커야 함")
+    if opts.gsd_scale <= 0:
+        bad("gsd_scale은 0보다 커야 함")
+    if opts.epsg is not None:
+        from ._core.geo import crs_info
+
+        try:
+            info = crs_info(int(opts.epsg))
+        except Exception:  # noqa: BLE001
+            bad(f"알 수 없는 EPSG: {opts.epsg}")
+        if info["geographic"]:
+            bad(f"EPSG:{opts.epsg}는 경위도 좌표계라 결과 좌표계로 쓸 수 없음. 투영 좌표계(예: 5186, 32652)를 지정해야 함")
+    if opts.bounds is not None:
+        b = opts.bounds
+        if len(b) != 4 or not (b[0] < b[2] and b[1] < b[3]):
+            bad("bounds는 (xmin, ymin, xmax, ymax)이며 xmin < xmax, ymin < ymax여야 함")
+    dsm = str(opts.dsm)
+    if dsm not in ("sparse", "plane") and not Path(dsm).expanduser().exists():
+        bad(f"dsm은 'sparse', 'plane' 또는 존재하는 DSM 파일 경로여야 함: {dsm}")
+    return opts
 
 
 def _images_dir(images: str | Path) -> Path:
@@ -204,6 +242,99 @@ class Project:
         state = "refined" if self.is_refined else "rendered" if self.is_rendered else "aligned" if self.is_aligned else "new"
         return f"Project(workspace={str(self.workspace)!r}, state={state!r})"
 
+    # ── 산출물을 변수로 읽기 ──
+    def cameras(self) -> Cameras:
+        """현재 재구성(보정했으면 보정 결과)의 카메라 자세 목록. :class:`~quickortho.CameraPose` 참고.
+
+        Raises:
+            ProjectError: 정렬 결과가 없음 (``not_aligned``).
+        """
+        self._store.require()
+        rec, frame, _ = self._store.load_current()
+        return cameras_from_reconstruction(rec, frame.origin, frame.epsg)
+
+    def points(self) -> PointCloud:
+        """현재 재구성(보정했으면 보정 결과)의 희소 점군. 풀면 ``xyz, rgb``.
+
+        Raises:
+            ProjectError: 정렬 결과가 없음 (``not_aligned``).
+        """
+        self._store.require()
+        rec, frame, _ = self._store.load_current()
+        return points_from_reconstruction(rec, frame.origin, frame.epsg)
+
+    def ground_to_image(self, image: str, xyz) -> "np.ndarray":
+        """지도 좌표 (N, 3) → 사진 ``image``의 사진 좌표 (N, 2), SDK 화소 규약.
+
+        카메라 뒤쪽 점은 NaN. 사진 범위 밖이어도 좌표를 돌려주므로 ``CameraPose.in_image()``로 거름.
+
+        Raises:
+            ProjectError: 정렬 결과가 없음. KeyError: 정합되지 않은(또는 없는) 사진.
+        """
+        return self._camera(image).project(xyz)
+
+    def image_to_ground(self, image: str, uv, *, z: float | None = None) -> "np.ndarray":
+        """사진 ``image``의 사진 좌표 (N, 2) → 지도 좌표 (N, 3).
+
+        원본 사진에서 탐지한 객체의 위치를 지도로 옮길 때 씀. 광선과 간이 DSM의 교점을 구하며,
+        ``z``를 주면 그 높이의 수평면과 교차함 (예: 해수면 0 m). 위쪽을 향하는 광선은 NaN.
+
+        Raises:
+            ProjectError: 정렬 결과가 없음(``not_aligned``), ``z`` 없이 DSM이 없음(``not_rendered``).
+            KeyError: 정합되지 않은(또는 없는) 사진.
+        """
+        import numpy as np
+
+        cam = self._camera(image)
+        d = cam.rays(uv)
+        c = cam.center
+        out = np.full((len(d), 3), np.nan)
+        down = d[:, 2] < -1e-9
+        if not down.any():
+            return out
+        dd = d[down]
+        if z is not None:
+            t = (float(z) - c[2]) / dd[:, 2]
+            out[down] = c + t[:, None] * dd
+            return out
+        dsm = self._dsm()
+        zz = np.full(len(dd), float(np.median(dsm.z)))
+        for _ in range(30):
+            t = (zz - c[2]) / dd[:, 2]
+            pts = c + t[:, None] * dd
+            z_new = dsm.sample(pts[:, 0], pts[:, 1])
+            if np.all(np.abs(z_new - zz) < 0.005):
+                zz = z_new
+                break
+            zz = 0.5 * (zz + z_new)
+        t = (zz - c[2]) / dd[:, 2]
+        out[down] = c + t[:, None] * dd
+        return out
+
+    def _camera(self, image: str):
+        self._store.require()
+        key = (self._store.has_refined(), (self._store.dir / "base").stat().st_mtime_ns)
+        if getattr(self, "_cam_cache", None) is None or self._cam_cache[0] != key:
+            self._cam_cache = (key, self.cameras())
+        return self._cam_cache[1][image]
+
+    def _dsm(self):
+        from ._core.marking import load_dsm
+
+        path = self.workspace / "dsm.tif"
+        if not path.exists():
+            raise ProjectError("DSM(dsm.tif)이 없음. orthomosaic() 또는 process()를 먼저 실행하거나 z를 지정해야 함",
+                               "not_rendered")
+        return load_dsm(path)
+
+    def read_orthomosaic(self, *, scale: float = 1.0, bounds: Bounds | None = None, order: ChannelOrder = "RGBA"):
+        """정사 모자이크를 ``(image, transform, crs)``로 읽음. :func:`quickortho.read_orthomosaic` 참고."""
+        return read_orthomosaic(self.workspace, scale=scale, bounds=bounds, order=order)
+
+    def read_dsm(self, *, scale: float = 1.0, bounds: Bounds | None = None):
+        """간이 DSM을 ``(z, transform, crs)``로 읽음."""
+        return read_dsm(self.workspace, scale=scale, bounds=bounds)
+
     # ── 처리 ──
     def scan(self, *, recursive: bool = False, on_event: EventCallback | None = None,
              cancel: CancelToken | None = None) -> ScanResult:
@@ -228,10 +359,10 @@ class Project:
             AlignmentError: SfM 실패(``sfm_failed``), 좌표 정렬 실패(``georef_too_few``, ``georef_mismatch``).
             Cancelled: 중단됨.
         """
-        opts = options or OrthoOptions()
+        opts = _check_options(options or OrthoOptions())
         out = _start(on_event, cancel)
         report, _, _ = run_align(self.images, self.workspace, opts, out)
-        return AlignResult.from_dict(report)
+        return AlignResult.from_dict(report, self.workspace)
 
     def orthomosaic(self, options: OrthoOptions | None = None, *, on_event: EventCallback | None = None,
                     cancel: CancelToken | None = None) -> OrthoResult:
@@ -246,7 +377,7 @@ class Project:
             ProcessingError: DSM 생성 실패 (``dsm_failed``).
             Cancelled: 중단됨.
         """
-        opts = options or OrthoOptions()
+        opts = _check_options(options or OrthoOptions())
         out = _start(on_event, cancel)
         report = run_render(self.workspace, opts, out)
         return OrthoResult.from_report(report, self.workspace)
@@ -254,7 +385,7 @@ class Project:
     def process(self, options: OrthoOptions | None = None, *, on_event: EventCallback | None = None,
                 cancel: CancelToken | None = None) -> OrthoResult:
         """:meth:`align` 후 :meth:`orthomosaic`을 실행함. 발생하는 예외는 두 메서드의 예외와 같음."""
-        opts = options or OrthoOptions()
+        opts = _check_options(options or OrthoOptions())
         out = _start(on_event, cancel)
         _, rec, epsg = run_align(self.images, self.workspace, opts, out)
         report = run_render(self.workspace, opts, out, rec_abs=rec, epsg=epsg)

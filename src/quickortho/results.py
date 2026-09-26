@@ -1,19 +1,44 @@
 """처리 결과 객체.
 
-모든 결과 객체는 자주 쓰는 값을 속성으로 제공하고, 원본 dict 전체를 ``raw``로 함께 가짐.
-``raw``의 구조는 문서 ``docs/report.md``에 정리되어 있으며, JSON으로 그대로 저장·전송할 수 있음.
+모든 결과 객체는 두 가지 방식으로 받을 수 있음.
+
+1. **결과 객체로 받기**: 자주 쓰는 값을 속성으로, 원본 dict 전체를 ``raw``(또는 ``report``)로 가짐
+2. **여러 변수로 풀어서 받기**: OpenCV 함수처럼 핵심 산출물이 차례로 나옴. 다른 라이브러리의 입력으로 바로 씀
+
+    res = project.process()                     # 1
+    image, transform, crs = project.process()   # 2
+
+풀었을 때 나오는 값:
+
+=================  ===========================================================
+결과                풀기
+=================  ===========================================================
+``ScanResult``     ``images, summary``
+``PreviewResult``  ``quicklook, coverage, transform, crs``
+``AlignResult``    ``cameras, points, crs``
+``OrthoResult``    ``image, transform, crs``
+``RefineResult``   ``image, transform, crs, gcps``
+=================  ===========================================================
+
+래스터 값은 numpy 배열(채널이 마지막 축), ``transform``은 ``affine.Affine``, ``crs``는 ``pyproj.CRS``임.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
+
+import numpy as np
+
+from .geodata import Bounds, Cameras, ChannelOrder, PointCloud
 
 
 @dataclass(frozen=True)
 class ScanResult:
-    """영상 폴더 스캔 결과 (:func:`quickortho.scan`).
+    """영상 폴더 스캔 결과 (:func:`quickortho.scan`). 풀면 ``images, summary``.
 
     Attributes:
         folder: 스캔한 폴더.
@@ -34,6 +59,10 @@ class ScanResult:
     failed: list[dict[str, str]]
     raw: dict[str, Any] = field(repr=False)
 
+    def __iter__(self) -> Iterator[Any]:
+        yield self.images
+        yield self.summary
+
     @property
     def selected_images(self) -> list[dict[str, Any]]:
         """처리에 쓸 영상(매핑용 카메라로 선별된 영상)만."""
@@ -43,6 +72,17 @@ class ScanResult:
     def num_with_gps(self) -> int:
         """선별된 영상 중 GPS 정보가 있는 영상 수."""
         return sum(1 for im in self.selected_images if im.get("lat") is not None and im.get("lon") is not None)
+
+    def positions(self, selected_only: bool = True) -> np.ndarray:
+        """촬영 위치 배열 (N, 3) [경도, 위도, 고도]. 고도는 절대고도, 없으면 상대고도, 둘 다 없으면 NaN.
+        GPS가 없는 영상은 NaN 행. 순서는 ``images``(또는 ``selected_images``)와 같음."""
+        ims = self.selected_images if selected_only else self.images
+        out = np.full((len(ims), 3), np.nan)
+        for i, im in enumerate(ims):
+            alt = im.get("abs_alt") if im.get("abs_alt") is not None else im.get("rel_alt")
+            lon, lat = im.get("lon"), im.get("lat")
+            out[i] = [np.nan if lon is None else lon, np.nan if lat is None else lat, np.nan if alt is None else alt]
+        return out
 
     @staticmethod
     def from_dict(d: dict[str, Any]) -> "ScanResult":
@@ -59,12 +99,15 @@ class ScanResult:
 
 @dataclass(frozen=True)
 class PreviewResult:
-    """빠른 미리보기 결과 (:func:`quickortho.preview`).
+    """빠른 미리보기 결과 (:func:`quickortho.preview`). 풀면 ``quicklook, coverage, transform, crs``.
+
+    ``quicklook``(간이 모자이크 RGBA, 없으면 ``None``)과 ``coverage``(중복 매수 uint16 격자)는
+    같은 격자라서 ``transform``·``crs``를 함께 씀.
 
     Attributes:
         output_dir: 결과 폴더.
-        quicklook: 간이 모자이크 PNG 경로. ``quicklook=False``로 실행했으면 ``None``.
-        coverage: 중복도 지도 PNG 경로.
+        quicklook_path: 간이 모자이크 PNG 경로. ``quicklook=False``로 실행했으면 ``None``.
+        coverage_path: 중복도 지도(색 입힌) PNG 경로.
         geojson: 촬영 범위·누락 구역·저중복 구역·촬영 위치 GeoJSON 경로 (WGS84).
         corners_lonlat: 두 PNG의 네 모서리 경위도 [좌상, 우상, 우하, 좌하]. 지도에 겹쳐 그릴 때 사용.
         num_images: 미리보기에 쓴 영상 수.
@@ -75,8 +118,8 @@ class PreviewResult:
     """
 
     output_dir: Path
-    quicklook: Optional[Path]
-    coverage: Path
+    quicklook_path: Optional[Path]
+    coverage_path: Path
     geojson: Path
     corners_lonlat: list[list[float]]
     num_images: int
@@ -85,13 +128,107 @@ class PreviewResult:
     warnings: list[str]
     raw: dict[str, Any] = field(repr=False)
 
+    # 0.1.0 호환 이름
+    @property
+    def quicklook(self) -> Optional[Path]:
+        """간이 모자이크 PNG 경로 (``quicklook_path``와 같음, 0.1.0 호환)."""
+        return self.quicklook_path
+
+    @property
+    def coverage(self) -> Path:
+        """중복도 지도 PNG 경로 (``coverage_path``와 같음, 0.1.0 호환)."""
+        return self.coverage_path
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.read_quicklook()
+        yield self.read_coverage()
+        yield self.transform
+        yield self.crs
+
+    @property
+    def crs(self):
+        """좌표계 (``pyproj.CRS``, 촬영 위치의 UTM)."""
+        from pyproj import CRS
+
+        return CRS.from_epsg(int(self.raw["epsg"]))
+
+    @property
+    def transform(self):
+        """격자 화소(열, 행) → 지도(x, y) 변환 (``affine.Affine``). quicklook·coverage 공통."""
+        from affine import Affine
+
+        cell = float(self.raw["cell_m"])
+        b = self.raw.get("bounds")
+        if b is None:
+            raise ValueError("이 미리보기 결과에는 격자 범위(bounds)가 없음. SDK 0.2.0 이상으로 다시 실행해야 함")
+        return Affine(cell, 0.0, b[0], 0.0, -cell, b[3])
+
+    @property
+    def bounds(self) -> Bounds:
+        """격자 범위 (xmin, ymin, xmax, ymax), 지도 좌표."""
+        return tuple(self.raw["bounds"])  # type: ignore[return-value]
+
+    def read_quicklook(self, order: ChannelOrder = "RGBA") -> Optional[np.ndarray]:
+        """간이 모자이크 ``(H, W, C)`` uint8. 없으면 ``None``."""
+        if self.quicklook_path is None:
+            return None
+        from PIL import Image
+
+        from .geodata import _reorder
+
+        with Image.open(self.quicklook_path) as im:
+            return _reorder(np.asarray(im.convert("RGBA")), order)
+
+    def read_coverage(self) -> np.ndarray:
+        """중복 매수 격자 ``(H, W)`` uint16 (0 = 촬영 안 됨)."""
+        from .geodata import read_raster
+
+        arr, _, _ = read_raster(self.output_dir / "coverage.tif", channels_last=False)
+        return arr[0]
+
+    def read_gap_mask(self) -> np.ndarray:
+        """누락 구역 격자 ``(H, W)`` bool."""
+        from .geodata import read_raster
+
+        arr, _, _ = read_raster(self.output_dir / "coverage.tif", channels_last=False)
+        return arr[1] > 0
+
+    def _shapes(self, kind: str, crs: str) -> list:
+        from pyproj import Transformer
+        from shapely.geometry import shape
+        from shapely.ops import transform as sh_transform
+
+        gj = json.loads(Path(self.geojson).read_text(encoding="utf-8"))
+        geoms = [shape(f["geometry"]) for f in gj["features"] if f["properties"].get("kind") == kind]
+        if crs == "lonlat":
+            return geoms
+        tr = Transformer.from_crs(4326, int(self.raw["epsg"]), always_xy=True)
+        return [sh_transform(tr.transform, g) for g in geoms]
+
+    def gaps(self, crs: str = "map") -> list:
+        """누락 구역 shapely Polygon 목록. ``crs="map"``은 지도 좌표(UTM), ``"lonlat"``은 경위도."""
+        return self._shapes("gap", crs)
+
+    def footprints(self, crs: str = "map") -> list:
+        """영상별 촬영 범위 shapely Polygon 목록 (``footprint_names``와 같은 순서)."""
+        return self._shapes("footprint", crs)
+
+    @property
+    def footprint_names(self) -> list[str]:
+        gj = json.loads(Path(self.geojson).read_text(encoding="utf-8"))
+        return [f["properties"]["file"] for f in gj["features"] if f["properties"].get("kind") == "footprint"]
+
+    def low_overlap(self, crs: str = "map") -> list:
+        """저중복(1장) 구역 shapely Polygon 목록."""
+        return self._shapes("low_overlap", crs)
+
     @staticmethod
     def from_dict(d: dict[str, Any], output_dir: Path) -> "PreviewResult":
         o = d["outputs"]
         return PreviewResult(
             output_dir=Path(output_dir),
-            quicklook=Path(o["quicklook"]) if o.get("quicklook") else None,
-            coverage=Path(o["coverage"]),
+            quicklook_path=Path(o["quicklook"]) if o.get("quicklook") else None,
+            coverage_path=Path(o["coverage"]),
             geojson=Path(o["geojson"]),
             corners_lonlat=d["corners_lonlat"],
             num_images=d["num_images"],
@@ -104,7 +241,7 @@ class PreviewResult:
 
 @dataclass(frozen=True)
 class AlignResult:
-    """정렬(SfM + GPS 좌표 정렬) 결과 (:meth:`quickortho.Project.align`).
+    """정렬(SfM + GPS 좌표 정렬) 결과 (:meth:`quickortho.Project.align`). 풀면 ``cameras, points, crs``.
 
     Attributes:
         num_images: SfM에 넣은 영상 수.
@@ -115,6 +252,7 @@ class AlignResult:
         gps_residual_m: 정렬 후 카메라 위치와 GPS의 수평 RMS 차이(m).
         warnings: 경고 문장 목록.
         raw: 원본 dict (``project/align_report.json``과 같음).
+        workspace: 워크스페이스 경로 (카메라·점군을 읽을 때 씀).
     """
 
     num_images: int
@@ -125,9 +263,45 @@ class AlignResult:
     gps_residual_m: float
     warnings: list[str]
     raw: dict[str, Any] = field(repr=False)
+    workspace: Optional[Path] = field(default=None, repr=False)
+
+    def __iter__(self) -> Iterator[Any]:
+        yield self.cameras
+        yield self.points
+        yield self.crs
+
+    @property
+    def crs(self):
+        """좌표계 (``pyproj.CRS``)."""
+        from pyproj import CRS
+
+        return CRS.from_epsg(self.epsg)
+
+    def _load(self):
+        if self.workspace is None:
+            raise ValueError("워크스페이스 정보가 없어 카메라·점군을 읽을 수 없음")
+        from ._core.project import Project as _Store
+
+        return _Store(self.workspace).load_base()
+
+    @cached_property
+    def cameras(self) -> Cameras:
+        """정합된 영상의 카메라 자세 목록 (:class:`~quickortho.CameraPose`, 이름순)."""
+        from .geodata import cameras_from_reconstruction
+
+        rec, frame = self._load()
+        return cameras_from_reconstruction(rec, frame.origin, frame.epsg)
+
+    @cached_property
+    def points(self) -> PointCloud:
+        """희소 점군 (:class:`~quickortho.PointCloud`)."""
+        from .geodata import points_from_reconstruction
+
+        rec, frame = self._load()
+        return points_from_reconstruction(rec, frame.origin, frame.epsg)
 
     @staticmethod
-    def from_dict(d: dict[str, Any]) -> "AlignResult":
+    def from_dict(d: dict[str, Any], workspace: Optional[Path] = None) -> "AlignResult":
         sfm, geo = d["sfm"], d["georef"]
         return AlignResult(
             num_images=int(sfm["num_input_images"]),
@@ -138,13 +312,17 @@ class AlignResult:
             gps_residual_m=float(geo["gps_residual_rms_m"]),
             warnings=list(d.get("warnings", [])),
             raw=d,
+            workspace=Path(workspace) if workspace else None,
         )
 
 
 @dataclass(frozen=True)
 class OrthoResult:
-    """정사 모자이크 결과 (:meth:`quickortho.Project.orthomosaic`, :meth:`~quickortho.Project.process`,
-    :meth:`~quickortho.Project.refine`).
+    """정사 모자이크 결과 (:meth:`quickortho.Project.orthomosaic`, :meth:`~quickortho.Project.process`).
+    풀면 ``image, transform, crs``.
+
+    ``image``는 정사 모자이크 전체를 ``(H, W, 4)`` uint8 RGBA로 읽은 배열임. 결과가 크면 메모리를 많이 쓰므로
+    ``read(scale=0.25)``나 ``read(bounds=...)``로 필요한 만큼만 읽는 것을 권장함.
 
     Attributes:
         orthomosaic: 정사 모자이크 GeoTIFF(COG, RGBA) 경로.
@@ -174,6 +352,12 @@ class OrthoResult:
     warnings: list[str]
     report: dict[str, Any] = field(repr=False)
 
+    def __iter__(self) -> Iterator[Any]:
+        image, transform, crs = self.read()
+        yield image
+        yield transform
+        yield crs
+
     @property
     def total_time_s(self) -> float:
         """정렬 + 마지막 정사 모자이크 생성에 걸린 시간(초)."""
@@ -183,6 +367,41 @@ class OrthoResult:
     def peak_memory_mb(self) -> float:
         """처리 중 최대 메모리 사용량(MB)."""
         return float(self.report.get("peak_memory_mb", 0.0))
+
+    @cached_property
+    def _header(self) -> tuple:
+        import rasterio
+        from pyproj import CRS
+
+        with rasterio.open(self.orthomosaic) as ds:
+            return ds.transform, CRS.from_user_input(ds.crs.to_wkt()), tuple(ds.bounds)
+
+    @property
+    def transform(self):
+        """화소(열, 행) → 지도(x, y) 변환 (``affine.Affine``). ``x, y = transform * (col, row)``."""
+        return self._header[0]
+
+    @property
+    def crs(self):
+        """좌표계 (``pyproj.CRS``)."""
+        return self._header[1]
+
+    @property
+    def bounds(self) -> Bounds:
+        """결과 범위 (xmin, ymin, xmax, ymax), 지도 좌표."""
+        return self._header[2]
+
+    def read(self, *, scale: float = 1.0, bounds: Optional[Bounds] = None, order: ChannelOrder = "RGBA"):
+        """정사 모자이크를 ``(image, transform, crs)``로 읽음. :func:`quickortho.read_orthomosaic` 참고."""
+        from .geodata import read_orthomosaic
+
+        return read_orthomosaic(self.orthomosaic, scale=scale, bounds=bounds, order=order)
+
+    def read_dsm(self, *, scale: float = 1.0, bounds: Optional[Bounds] = None):
+        """간이 DSM을 ``(z, transform, crs)``로 읽음. DSM은 정사 모자이크와 해상도·범위가 다름."""
+        from .geodata import read_dsm
+
+        return read_dsm(self.dsm, scale=scale, bounds=bounds)
 
     @staticmethod
     def from_report(report: dict[str, Any], workspace: Path) -> "OrthoResult":
@@ -205,7 +424,7 @@ class OrthoResult:
 
 @dataclass(frozen=True)
 class RefineResult:
-    """정밀 보정 결과 (:meth:`quickortho.Project.refine`).
+    """정밀 보정 결과 (:meth:`quickortho.Project.refine`). 풀면 ``image, transform, crs, gcps``.
 
     Attributes:
         mode: 좌표 기준. ``"gcp"``(기준점 3점 이상), ``"gcp_shift"``(1~2점, 평행 이동만),
@@ -229,6 +448,19 @@ class RefineResult:
     ortho: OrthoResult
     warnings: list[str]
     raw: dict[str, Any] = field(repr=False)
+
+    def __iter__(self) -> Iterator[Any]:
+        image, transform, crs = self.ortho.read()
+        yield image
+        yield transform
+        yield crs
+        yield self.gcps
+
+    @property
+    def residuals(self) -> np.ndarray:
+        """GCP 오차 배열 (N, 3) [dx, dy, dz] (m, 추정 - 측량). 삼각측량하지 못한 점은 NaN. 순서는 ``gcps``와 같음."""
+        return np.array([[np.nan if r.get(k) is None else r[k] for k in ("dx", "dy", "dz")] for r in self.gcps],
+                        dtype=float).reshape(-1, 3)
 
     @staticmethod
     def from_report(report: dict[str, Any], workspace: Path) -> "RefineResult":
