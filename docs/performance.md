@@ -77,5 +77,5 @@ qo.OrthoOptions(
 
 ## 5. GPU
 
-0.1.0은 CPU만 씀. PyPI의 pycolmap 배포본은 CPU 빌드이며, COLMAP의 GPU 가속(CUDA)을 쓰려면 pycolmap을
+현재 버전은 CPU만 씀. PyPI의 pycolmap 배포본은 CPU 빌드이며, COLMAP의 GPU 가속(CUDA)을 쓰려면 pycolmap을
 CUDA로 직접 빌드해야 함. GPU 선택 가속은 이후 버전 후보임.

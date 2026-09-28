@@ -135,8 +135,8 @@ SfM은 스레드 실행 순서에 따라 결과가 조금씩 달라지므로 값
 5. 태그를 push함
 
    ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
+   git tag v<버전>
+   git push origin v<버전>
    ```
 
 6. `release` 워크플로가 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist를 게시함.

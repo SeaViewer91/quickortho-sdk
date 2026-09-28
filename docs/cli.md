@@ -210,7 +210,7 @@ while (p.StandardOutput.ReadLine() is { } line) {
 ```text
 호출 측                                     serve 프로세스
    │  (프로세스 시작)                              │
-   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.1.0","warmup_s":1.2}
+   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.2.0","warmup_s":1.2}
    │ ───▶ {"job":1,"argv":["ortho","/data/a","-o","/data/a_out"]}
    │ ◀──── {"job":1,"type":"stage",...}
    │ ◀──── {"job":1,"type":"progress",...}

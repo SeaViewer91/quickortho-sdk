@@ -16,7 +16,7 @@ project = qo.Project.open("workspace/")
 cameras, (xyz, rgb) = project.cameras(), project.points()          # 카메라 자세(K·dist·R·t), 희소 점군
 ```
 
-> 최신 릴리스는 0.1.0(알파)이며, main 브랜치는 0.2.0 개발 중임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
+> 최신 릴리스는 0.2.0(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
 
 ## 주요 기능
 
@@ -56,7 +56,7 @@ pycolmap·rasterio·OpenCV 같은 의존성은 pip가 PyPI에서 OS에 맞게 �
 ```bash
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.1.0/quickortho_sdk-0.1.0-py3-none-any.whl
+pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.2.0/quickortho_sdk-0.2.0-py3-none-any.whl
 quickortho version                   # 설치 확인
 ```
 

@@ -31,7 +31,7 @@ with rasterio.open(result.orthomosaic) as ds:
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.1.0",
+  "engine_version": "0.2.0",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,

@@ -49,19 +49,19 @@ python -m pip install --upgrade pip
 wheel은 순수 파이썬 패키지(`py3-none-any`)라서 파일 하나로 세 OS 모두 설치됨.
 
 ```bash
-pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.1.0/quickortho_sdk-0.1.0-py3-none-any.whl
+pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.2.0/quickortho_sdk-0.2.0-py3-none-any.whl
 ```
 
 wheel 파일을 내려받아 두었다면 파일 경로로 설치해도 됨.
 
 ```bash
-pip install ./quickortho_sdk-0.1.0-py3-none-any.whl
+pip install ./quickortho_sdk-0.2.0-py3-none-any.whl
 ```
 
 Git 태그에서 바로 설치할 수도 있음 (Git 필요).
 
 ```bash
-pip install "quickortho-sdk @ git+https://github.com/SeaViewer91/quickortho-sdk@v0.1.0"
+pip install "quickortho-sdk @ git+https://github.com/SeaViewer91/quickortho-sdk@v0.2.0"
 ```
 
 ### 다른 프로젝트의 의존성으로 지정
@@ -69,7 +69,7 @@ pip install "quickortho-sdk @ git+https://github.com/SeaViewer91/quickortho-sdk@
 `requirements.txt`:
 
 ```text
-quickortho-sdk @ https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.1.0/quickortho_sdk-0.1.0-py3-none-any.whl
+quickortho-sdk @ https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.2.0/quickortho_sdk-0.2.0-py3-none-any.whl
 ```
 
 `pyproject.toml`:
@@ -77,7 +77,7 @@ quickortho-sdk @ https://github.com/SeaViewer91/quickortho-sdk/releases/download
 ```toml
 [project]
 dependencies = [
-    "quickortho-sdk @ https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.1.0/quickortho_sdk-0.1.0-py3-none-any.whl",
+    "quickortho-sdk @ https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.2.0/quickortho_sdk-0.2.0-py3-none-any.whl",
 ]
 ```
 
@@ -92,7 +92,7 @@ quickortho version
 다음과 같은 한 줄이 나오면 정상임.
 
 ```json
-{"type": "result", "command": "version", "data": {"engine": "0.1.0", "sdk": "0.1.0", "protocol": 1, "python": "3.12.7", "os": "Darwin", "arch": "arm64"}}
+{"type": "result", "command": "version", "data": {"engine": "0.2.0", "sdk": "0.2.0", "protocol": 1, "python": "3.12.7", "os": "Darwin", "arch": "arm64"}}
 ```
 
 파이썬에서 확인:
@@ -122,7 +122,7 @@ pip uninstall quickortho-sdk
 ```bash
 # 인터넷 되는 컴퓨터 (대상과 OS·Python 버전이 같아야 함)
 mkdir wheelhouse
-pip download -d wheelhouse ./quickortho_sdk-0.1.0-py3-none-any.whl
+pip download -d wheelhouse ./quickortho_sdk-0.2.0-py3-none-any.whl
 
 # 대상 컴퓨터로 wheelhouse 폴더를 옮긴 뒤
 pip install --no-index --find-links wheelhouse quickortho-sdk
@@ -133,7 +133,7 @@ OS가 다른 컴퓨터에서 받아야 하면 `--platform`, `--python-version`, 
 ```bash
 pip download -d wheelhouse --only-binary=:all: \
     --platform win_amd64 --python-version 3.12 \
-    ./quickortho_sdk-0.1.0-py3-none-any.whl
+    ./quickortho_sdk-0.2.0-py3-none-any.whl
 ```
 
 ## 7. OS별 주의 사항
