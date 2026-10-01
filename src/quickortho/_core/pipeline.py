@@ -21,6 +21,7 @@ from .._version import __version__
 from ..errors import InputError, ProcessingError
 from ..options import OrthoOptions
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
+from .geo import Projector
 from .project import Project, to_absolute
 from .protocol import Emitter
 from .scan import scan_folder
@@ -180,6 +181,44 @@ def run_render(
     return compose_report(proj, products, timings, mem.peak)
 
 
+def align_report_from_project(proj: Project) -> dict:
+    """정렬 보고서가 없는 프로젝트(정렬 뒤 정사 모자이크 단계에서 실패한 경우)의 보고서를 재구성에서 다시 만든다.
+
+    정렬 단계의 처리 시간·메모리 등 다시 알 수 없는 값은 비워 두고 경고로 알린다.
+    """
+    rec, frame = proj.load_base()
+    meta = proj.meta()
+    gps = {k: tuple(v) for k, v in meta.get("gps", {}).items()}
+    names = [im.name for im in rec.images.values() if im.has_pose and im.name in gps]
+    residual = None
+    if names:
+        e, n = Projector(frame.epsg).forward([gps[k][0] for k in names], [gps[k][1] for k in names])
+        c = np.array([rec.find_image_with_name(k).projection_center() for k in names]) + frame.origin
+        residual = float(np.sqrt(np.mean((c[:, 0] - e) ** 2 + (c[:, 1] - n) ** 2)))
+    n_input = max(len(gps), rec.num_images())
+    return {
+        "engine_version": meta.get("engine_version", __version__),
+        "input": {"folder": meta.get("image_dir"), "selected": n_input, "with_gps": len(gps)},
+        "sfm": {
+            "num_input_images": n_input,
+            "num_registered": rec.num_reg_images(),
+            "num_points3D": rec.num_points3D(),
+            "mean_reprojection_error_px": float(rec.compute_mean_reprojection_error()),
+            "mapper": "unknown",
+        },
+        "georef": {
+            "epsg": frame.epsg,
+            "gps_residual_rms_m": residual,
+            "num_aligned": len(names),
+            "note": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요",
+        },
+        "timings_s": {},
+        "peak_memory_mb": 0.0,
+        "report_version": REPORT_VERSION,
+        "warnings": ["정렬 결과는 이전 실행에서 가져옴 (정사 모자이크 단계에서 중단된 작업). 정렬 단계 처리 시간은 기록되지 않음"],
+    }
+
+
 def compose_report(proj: Project, products: dict, render_timings: dict[str, float], render_peak: int) -> dict:
     """정렬 보고서 + 마지막 정사 모자이크 결과 + (보정했으면) 보정 결과를 합쳐 report.json을 쓴다.
 
@@ -187,6 +226,10 @@ def compose_report(proj: Project, products: dict, render_timings: dict[str, floa
     peak_memory_mb: 정렬 단계와 이번 정사 모자이크 단계 중 큰 값.
     """
     align = proj.align_report()
+    if not align:
+        # 정렬 보고서가 없는 워크스페이스: 데스크톱 앱 v0.2.0이 정렬 직후 정사 모자이크 단계에서 실패한 경우
+        align = align_report_from_project(proj)
+        proj.save_align_report(align)
     report = dict(align)
     report.update(products)
     report["report_version"] = REPORT_VERSION

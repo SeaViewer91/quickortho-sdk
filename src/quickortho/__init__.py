@@ -14,7 +14,13 @@
 """
 
 from ._version import __version__
-from .errors import (
+
+# rasterio를 불러오기 전에 PROJ·GDAL 데이터 경로를 패키지 내장 데이터로 고정한다 (_geoenv.py 참고)
+from . import _geoenv
+
+_geoenv.isolate()
+
+from .errors import (  # noqa: E402
     AlignmentError,
     Cancelled,
     InputError,

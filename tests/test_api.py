@@ -284,6 +284,24 @@ def test_open_v020_workspace(workspace):
     assert r.report["sfm"]["num_registered"] == 12 and r.report["report_version"] == 1
 
 
+def test_render_v020_workspace_failed_after_align(workspace):
+    """데스크톱 앱 v0.2.0이 정렬 직후 정사 모자이크 단계에서 실패한 워크스페이스 (보고서가 하나도 없음).
+
+    정렬을 다시 하지 않고 정사 모자이크를 만들 수 있어야 하며, 보고서의 정합 정보는 재구성에서 다시 만든다.
+    """
+    proj_dir = workspace / "project"
+    for f in ("align_report.json", "base_report.json"):
+        (proj_dir / f).unlink(missing_ok=True)
+    for f in ("report.json", "orthomosaic.tif", "dsm.tif", "preview.png"):
+        (workspace / f).unlink(missing_ok=True)
+    r = qo.Project.open(workspace).orthomosaic(qo.OrthoOptions(gsd_scale=4.0))
+    rep = r.report
+    assert rep["sfm"]["num_registered"] == 12 and rep["input"]["with_gps"] == 12
+    assert rep["georef"]["gps_residual_rms_m"] is not None
+    assert any("이전 실행" in w for w in rep["warnings"])
+    assert (proj_dir / "align_report.json").exists()
+
+
 # ───────────────────────── CLI·serve ─────────────────────────
 
 

@@ -138,6 +138,21 @@ SDK 예외가 아닌 예외임. `error` 이벤트의 `detail`(스택 트레이�
 
 conda의 GDAL과 pip의 rasterio가 섞인 경우임. 새 가상환경(venv)에서 설치하거나, conda 환경에서도 rasterio를 pip로 설치함.
 
+### `The EPSG code is unknown ... It comes from another PROJ installation`
+
+Windows에 PostGIS·QGIS(OSGeo4W) 등을 설치하면 시스템 환경변수 `PROJ_LIB`·`PROJ_DATA`·`GDAL_DATA`가 그 프로그램의
+데이터 폴더를 가리킴. rasterio가 이 값을 따라 버전이 다른 `proj.db`를 읽으면 정사 모자이크 저장 단계에서 이 오류가 남.
+
+- 0.2.1부터 `import quickortho` 시점에 이 환경변수를 rasterio에 들어 있는 데이터 폴더로 바꿈 (이 파이썬 프로세스 안에서만).
+  바꾼 변수는 `quickortho version`의 `geo_env_overridden`, `quickortho doctor`의 "좌표계 (GeoTIFF 저장)" 항목에 표시됨
+- quickortho보다 rasterio를 먼저 불러오는 프로그램은 이 처리가 늦어 적용되지 않음. `import quickortho`를 먼저 함
+- 정렬이 끝난 뒤 난 오류이므로 `Project.open(워크스페이스).orthomosaic()`(명령줄 `quickortho render`)로 정렬 없이 이어서 만듦
+
+### 처리 중 `SQLite error: database is locked`로 프로세스가 종료됨
+
+0.2.0 이하에서 특징점 추출·매칭 진행률을 읽는 연결이 COLMAP의 DB 쓰기와 겹치면 생기던 문제임. 0.2.1에서 잠금을 잡지 않는
+방식(`immutable=1`)으로 바꿈. 이 때문에 진행률은 수 장 단위로 늦게 올라갈 수 있음.
+
 ### Windows에서 한글이 깨짐
 
 - 명령줄 출력은 항상 UTF-8임. PowerShell에서 보이는 글자가 깨지면 `[Console]::OutputEncoding = [Text.Encoding]::UTF8`

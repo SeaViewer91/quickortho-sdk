@@ -25,30 +25,32 @@ pycolmap.logging.minloglevel = 2  # COLMAP 내부 INFO 로그 억제 (stdout은 
 class _RowCounter:
     """진행률 표시용으로 COLMAP DB의 행 수를 읽는다.
 
-    연결을 단계 내내 열어 둔다. 읽기 연결을 매번 열고 닫으면 SQLite가 마지막 연결 종료로 판단해
-    WAL 정리를 시도할 수 있고, 이것이 COLMAP 쓰기와 겹치면 비정상 종료가 날 수 있다.
+    COLMAP은 DB를 WAL 모드로 쓰면서 잠금 대기 시간(busy timeout)을 두지 않는다. 그래서 다른 연결이 DB를 읽다가
+    잠깐이라도 잠금이 겹치면 COLMAP이 "database is locked"로 프로세스를 종료시킨다 (자주 읽을수록 잘 재현됨).
+    이를 피하려고 ``immutable=1``로 연다. 이 연결은 잠금을 전혀 잡지 않고 WAL·공유 메모리 파일도 건드리지 않으며,
+    본 파일에 반영(checkpoint)된 내용만 읽는다. 그래서 수치가 조금 늦게 따라오고, 쓰는 도중의 페이지를 읽으면
+    오류가 날 수 있는데, 이 경우는 이번 폴링만 건너뛴다. 변경 감지를 하지 않는 연결이므로 매번 새로 연다.
     """
 
     def __init__(self, db_path: Path, table: str) -> None:
         self.db_path = db_path
         self.table = table
-        self.con: sqlite3.Connection | None = None
 
     def __call__(self) -> int | None:
+        if not self.db_path.exists():
+            return None
         try:
-            if self.con is None:
-                if not self.db_path.exists():
-                    return None
-                # as_uri(): Windows 경로(역슬래시, 드라이브 문자)와 한글 경로를 URI로 올바르게 바꿈
-                self.con = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True, timeout=0.2)
-            return self.con.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0]
+            # as_uri(): Windows 경로(역슬래시, 드라이브 문자)와 한글 경로를 URI로 올바르게 바꿈
+            con = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?immutable=1", uri=True)
+            try:
+                return con.execute(f"SELECT COUNT(*) FROM {self.table}").fetchone()[0]
+            finally:
+                con.close()
         except sqlite3.Error:
             return None
 
     def close(self) -> None:
-        if self.con is not None:
-            self.con.close()
-            self.con = None
+        pass
 
 
 def _run_with_progress(
@@ -70,7 +72,7 @@ def _run_with_progress(
         while th.is_alive():
             th.join(1.0)
             n = poll()
-            if n is not None and n != last:
+            if n is not None and n > last:  # 늦게 반영되는 값이므로 늘어날 때만 알림
                 out.progress(stage, min(n, total), total)
                 last = n
     except BaseException:

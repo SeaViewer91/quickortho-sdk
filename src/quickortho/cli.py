@@ -18,6 +18,7 @@ import time
 import traceback
 from pathlib import Path
 
+from . import _geoenv
 from ._core.protocol import PROTOCOL_VERSION, Emitter
 from ._version import __version__
 from .errors import QuickOrthoError
@@ -177,6 +178,8 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
             "python": platform.python_version(),
             "os": platform.system(),
             "arch": platform.machine(),
+            # 다른 GIS 프로그램(PostGIS 등)의 설정이라 무시한 환경변수 (진단용)
+            "geo_env_overridden": dict(_geoenv.overridden),
         })
     elif cmd == "doctor":
         from .doctor import run_doctor

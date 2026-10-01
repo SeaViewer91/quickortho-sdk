@@ -94,6 +94,21 @@ def run_doctor(path: str | Path = ".") -> dict[str, Any]:
 
     _check("좌표 변환", proj, checks)
 
+    def raster_crs() -> str:
+        # 정사 모자이크 저장(rasterio)은 pyproj와 다른 PROJ를 씀. PostGIS 등의 PROJ_LIB가 섞이면 여기서만 실패함
+        from rasterio.crs import CRS
+
+        from . import _geoenv
+
+        if CRS.from_epsg(5186).to_epsg() != 5186:
+            raise RuntimeError("rasterio에서 EPSG:5186을 읽지 못함")
+        note = ""
+        if _geoenv.overridden:
+            note = " (다른 프로그램의 설정 " + ", ".join(sorted(_geoenv.overridden)) + "은 무시하고 내장 데이터 사용)"
+        return "rasterio 좌표계 정상" + note
+
+    _check("좌표계 (GeoTIFF 저장)", raster_crs, checks)
+
     def resources() -> str:
         import psutil
 

@@ -720,6 +720,6 @@ COLMAP 내부 로그는 오류(ERROR) 수준만 출력되며, 표준 출력이 �
 ### `doctor(path=".") -> dict`
 
 설치 환경 진단. `{"ok": bool, "sdk": 버전, "checks": [{"name", "ok", "detail"}]}`.
-확인 항목: Python·OS 지원 범위, 라이브러리 버전(pycolmap CUDA 여부 포함), 좌표 변환, CPU·메모리(부족하면 경고만),
+확인 항목: Python·OS 지원 범위, 라이브러리 버전(pycolmap CUDA 여부 포함), 좌표 변환(pyproj)과 GeoTIFF 좌표계(rasterio, 다른 GIS 프로그램의 PROJ 설정을 무시했으면 표시), CPU·메모리(부족하면 경고만),
 `path`의 디스크 여유(5GB 미만 실패)·쓰기 권한, 기능 시험(COG 쓰기·읽기, SQLite, 특징점 추출).
 명령줄 `quickortho doctor [path]`와 같음.
