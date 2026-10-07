@@ -55,6 +55,8 @@ def _check_options(opts: OrthoOptions) -> OrthoOptions:
         bad("gsd_m은 0보다 커야 함")
     if opts.gsd_scale <= 0:
         bad("gsd_scale은 0보다 커야 함")
+    if opts.cache_budget_mb is not None and opts.cache_budget_mb <= 0:
+        bad("cache_budget_mb는 0보다 커야 함 (None이면 자동)")
     if opts.epsg is not None:
         from ._core.geo import crs_info
 

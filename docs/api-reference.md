@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.2.0
+대상 버전: 0.3.0
 
 ## 목차
 
@@ -102,7 +102,7 @@ class qo.Project(workspace, images=None)
 #### `Project.open(workspace) -> Project` (클래스 메서드)
 
 정렬을 마친 기존 워크스페이스를 엶. 영상 폴더 경로는 `project/meta.json`에서 읽음.
-QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_QuickOrtho/ortho/`)도 열 수 있음.
+QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴더>_QuickOrtho/ortho/`)도 열 수 있음.
 
 - 예외: `ProjectError`(`not_aligned`) — 정렬 결과가 없음
 
@@ -191,7 +191,7 @@ QuickOrtho 데스크톱 앱 v0.2.0이 만든 결과 폴더(`<영상 폴더>_Quic
 
 ```python
 project = qo.Project.open("out")
-for scale in (4, 2, 1):
+for scale in (4, 2, 1):  # 1(기본값)이 원본 해상도
     r = project.orthomosaic(qo.OrthoOptions(gsd_scale=scale))
     print(scale, r.gsd_m, r.width, r.height)
 ```
@@ -332,9 +332,9 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | 필드 | 기본값 | 쓰는 단계 | 설명 |
 |---|---|---|---|
 | `gsd_m` | `None` | orthomosaic | 출력 GSD(m/화소). 지정하면 `gsd_scale`보다 우선함 |
-| `gsd_scale` | `2.0` | orthomosaic | `gsd_m`이 없을 때 원본 GSD에 곱할 배율 |
+| `gsd_scale` | `1.0` | orthomosaic | `gsd_m`이 없을 때 원본 GSD에 곱할 배율. 1은 원본 해상도 (0.2.x까지 기본값 2) |
 | `keep_work` | `False` | align | COLMAP DB·희소 재구성 원본을 `<workspace>/work/`에 남김 (문제 분석용) |
-| `cache_budget_mb` | `600` | orthomosaic | 정사투영 중 축소 영상 캐시 메모리 상한(MB) |
+| `cache_budget_mb` | `None` | orthomosaic | 정사투영 중 영상 캐시 메모리 상한(MB). `None`이면 사용 가능한 메모리의 30%(600~3072MB) |
 | `sfm` | `SfmOptions()` | align | SfM 옵션 |
 | `epsg` | `None` | align | 결과 좌표계 EPSG. 투영 좌표계만 가능 (예: 5186). `None`이면 촬영 위치의 UTM. GCP 보정을 하면 GCP 좌표계가 우선함 |
 | `bounds` | `None` | orthomosaic | 결과 범위 `(xmin, ymin, xmax, ymax)` (결과 좌표계). `None`이면 촬영 범위 전체 |
@@ -343,11 +343,15 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `dsm_z` | `None` | orthomosaic | `dsm="plane"`의 높이(m, 결과 좌표계 높이 기준). `None`이면 희소 점군 높이 중앙값 |
 | `dsm_vertical_align` | `True` | orthomosaic | 외부 DSM을 희소 점군 높이에 맞춰 중앙값 차이만큼 올리거나 내림 (해발고·타원체고 차이 보정) |
 
-- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, 경위도 EPSG, 잘못된 `bounds`, 없는 DSM 파일 등
+- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 경위도 EPSG, 잘못된 `bounds`, 없는 DSM 파일 등
 - `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
   `dsm_vertical_align`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
   단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
   새 좌표계 값으로 `orthomosaic()`을 다시 실행함
+- 0.3.0 미만이 저장한 옵션 중 당시 기본값과 같은 값(`gsd_m` 없이 `gsd_scale=2`, `cache_budget_mb=600`)은 `refine()`의
+  재생성에서 새 기본값(원본 해상도, 캐시 자동)으로 바꿔 쓰고 그 보고서에 경고를 남김. 바꾼 값은 워크스페이스에 저장함.
+  다른 값을 고른 경우는 그대로 씀. 이전 해상도로 만들려면 `bounds`·`dsm` 등 다른 옵션은 그대로 주고 `gsd_scale=2`로
+  `orthomosaic()`을 다시 실행함 (`orthomosaic()`은 저장값이 아니라 넘긴 옵션을 씀)
 - `gsd_m`·`bounds`·`grid_origin`·`epsg`를 같게 주면 여러 시기 결과가 화소 단위로 겹침 ([예](outputs.md#9-시기별-결과를-같은-격자로-만들기))
 - 외부 DSM은 결과 격자로 재투영(쌍선형)하며, 외부 자료가 없는 곳은 부드럽게 외삽함. 촬영 범위를 전혀 덮지 않으면 `ProcessingError`(`dsm_failed`)
 

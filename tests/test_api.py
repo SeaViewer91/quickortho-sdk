@@ -81,8 +81,8 @@ def test_rerender_with_other_gsd_skips_sfm(workspace, processed):
     events: list[qo.Event] = []
     r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4.0), on_event=events.append)
     assert [e.stage for e in events if e.type == "stage"] == ["dsm", "ortho", "finalize"]
-    assert r.gsd_m == pytest.approx(first.gsd_m * 2, rel=1e-6)
-    assert abs(r.width - first.width / 2) <= 2
+    assert r.gsd_m == pytest.approx(first.gsd_m * 4, rel=1e-6)  # 기본값 gsd_scale=1 대비 4배
+    assert abs(r.width - first.width / 4) <= 2
     assert r.report["sfm"]["num_registered"] == 12  # 정렬 보고서는 유지됨
     assert json.loads((workspace / "project" / "meta.json").read_text(encoding="utf-8"))["render"]["gsd_scale"] == 4.0
 
@@ -300,6 +300,91 @@ def test_render_v020_workspace_failed_after_align(workspace):
     assert rep["georef"]["gps_residual_rms_m"] is not None
     assert any("이전 실행" in w for w in rep["warnings"])
     assert (proj_dir / "align_report.json").exists()
+
+
+def test_saved_render_options_migrates_old_defaults():
+    """0.3.0 미만이 저장한 정사 옵션 중 당시 기본값(GSD 배율 2, 캐시 600 MB)만 새 기본값으로 바꾼다."""
+    from quickortho._core.pipeline import saved_render_options
+
+    o, note = saved_render_options({"engine_version": "0.2.1", "render": {
+        "gsd_m": None, "gsd_scale": 2.0, "cache_budget_mb": 600, "bounds": [0, 0, 10, 10]}})
+    assert o.gsd_scale == 1.0 and o.cache_budget_mb is None and o.bounds == (0, 0, 10, 10)
+    assert note and "0.2.1" in note
+    # 사용자가 고른 값은 그대로
+    o, note = saved_render_options({"engine_version": "0.2.1", "render": {"gsd_scale": 4.0, "cache_budget_mb": 300}})
+    assert (o.gsd_scale, o.cache_budget_mb, note) == (4.0, 300, None)
+    o, _ = saved_render_options({"engine_version": "0.2.1", "render": {"gsd_m": 0.05, "gsd_scale": 2.0}})
+    assert o.gsd_m == 0.05
+    # 0.3.0 이상이 저장한 배율 2는 사용자가 고른 값 (정렬은 이전 버전으로 했어도)
+    o, note = saved_render_options({"engine_version": "0.2.1", "render_engine_version": "0.3.0",
+                                    "render": {"gsd_scale": 2.0}})
+    assert o.gsd_scale == 2.0 and note is None
+    # 데스크톱 앱 v0.2.x는 gsd_m·gsd_scale만 저장함 (캐시 키 없음)
+    o, note = saved_render_options({"engine_version": "0.2.1", "render": {"gsd_m": None, "gsd_scale": 2.0}})
+    assert o.gsd_scale == 1.0 and o.cache_budget_mb is None and "gsd_scale=2" in note
+    # 캐시만 바뀌면 해상도 안내를 하지 않음
+    _, note = saved_render_options({"engine_version": "0.2.1", "render": {"gsd_scale": 4.0, "cache_budget_mb": 600}})
+    assert "캐시" in note and "gsd_scale=2" not in note
+    # 사전 릴리스·개발 버전 문자열
+    o, note = saved_render_options({"engine_version": "0.2.1", "render_engine_version": "0.3.0rc1",
+                                    "render": {"gsd_scale": 2.0, "cache_budget_mb": 600}})
+    assert (o.gsd_scale, o.cache_budget_mb, note) == (2.0, 600, None)
+    o, _ = saved_render_options({"engine_version": "0.2.0.dev0", "render": {"gsd_scale": 2.0}})
+    assert o.gsd_scale == 1.0
+    # 정사 옵션이 저장되지 않은 워크스페이스(정렬만 함)는 새 기본값
+    o, note = saved_render_options({"engine_version": "0.2.0"})
+    assert o.gsd_scale == 1.0 and o.cache_budget_mb is None and note is None
+
+
+def test_refine_upgrades_old_default_gsd(workspace, processed):
+    """0.2.x가 기본값으로 만든 워크스페이스를 보정하면 정사 모자이크를 원본 해상도로 다시 만들고, 바꾼 값을 저장한다."""
+    first = processed[2]
+    meta_p = workspace / "project" / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["engine_version"] = "0.2.1"
+    meta.pop("render_engine_version", None)
+    meta["render"] = {**meta["render"], "gsd_scale": 2.0, "cache_budget_mb": 600}
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+
+    p = qo.Project.open(workspace)
+    p.set_edits(max_reproj_error_px=1.0)
+    rr = p.refine()
+    assert rr.ortho.gsd_m == pytest.approx(first.gsd_m, rel=0.05)  # 보정으로 자세가 조금 바뀜
+    assert any("GSD 배율 2 → 1" in w for w in rr.ortho.report["warnings"])
+    saved = json.loads(meta_p.read_text(encoding="utf-8"))
+    assert saved["render"]["gsd_scale"] == 1.0 and saved["render"]["cache_budget_mb"] is None
+    assert saved["render_engine_version"] == qo.__version__
+    # 안내는 그 실행의 보고서에만 남고, 이후 정사 모자이크 보고서에는 나오지 않음
+    r2 = p.orthomosaic(qo.OrthoOptions(gsd_scale=4.0))
+    assert not any("GSD 배율" in w for w in r2.report["warnings"])
+
+
+def test_reset_refinement_upgrades_old_default_gsd(workspace, processed):
+    """보정 취소로 다시 만들 때도 같은 규칙을 적용하고 그 보고서에 안내를 남긴다."""
+    meta_p = workspace / "project" / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["engine_version"] = "0.2.1"
+    meta.pop("render_engine_version", None)
+    meta["render"] = {"gsd_m": None, "gsd_scale": 2.0}  # 데스크톱 앱 v0.2.x 형식
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+    r = qo.Project.open(workspace).reset_refinement()
+    assert r.gsd_m == pytest.approx(processed[2].gsd_m, rel=1e-6)
+    assert any("GSD 배율 2 → 1" in w for w in r.report["warnings"])
+
+
+def test_sparse_dsm_grid_is_half_point_spacing(processed):
+    rep = processed[2].report
+    area = rep["ortho"]["width"] * rep["ortho"]["height"] * rep["ortho"]["gsd_m"] ** 2
+    # 결과 화소 수는 경계를 GSD 배수로 올림해 정하므로 면적이 조금 다를 수 있음
+    assert rep["dsm"]["resolution_m"] == pytest.approx(max(0.5, 0.5 * (area / rep["dsm"]["num_points"]) ** 0.5), rel=0.01)
+    assert rep["ortho"]["blend"] == "seamline"
+    assert rep["ortho"]["gsd_m"] == pytest.approx(rep["ortho"]["source_gsd_m"])  # 기본값: 원본 해상도
+
+
+def test_cache_budget_validation(workspace):
+    with pytest.raises(qo.InputError) as ei:
+        qo.Project.open(workspace).orthomosaic(qo.OrthoOptions(cache_budget_mb=0))
+    assert ei.value.code == "invalid_argument"
 
 
 # ───────────────────────── CLI·serve ─────────────────────────

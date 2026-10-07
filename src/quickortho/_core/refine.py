@@ -305,8 +305,7 @@ def gcp_table(rec: pycolmap.Reconstruction, gcps: list[dict], frame: Frame) -> t
 
 
 def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
-    from ..options import OrthoOptions
-    from .pipeline import PeakMemory, compose_report, render_products
+    from .pipeline import PeakMemory, compose_report, render_products, saved_render_options
 
     t_start = time.perf_counter()
     proj = Project(ortho_dir)
@@ -455,7 +454,10 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                 out.log(f"{label} {s_['count']}점 RMSE 수평 {s_['rmse_xy']:.3f} m, 수직 {s_['rmse_z']:.3f} m")
 
         # 6) 정사 모자이크 재생성
-        opts = OrthoOptions.from_render_dict(meta.get("render") or {})
+        # 옵션 기본값 변경 안내는 이번 보고서에만 넣는다 (바꾼 값을 저장하므로 이후 실행에는 해당하지 않음)
+        opts, note = saved_render_options(meta)
+        if note:
+            out.log(note)
         if frame.epsg != base_frame.epsg:
             # 좌표계가 바뀌면(GCP 좌표계) 이전 좌표계로 지정한 범위·격자 기준점·평면 높이는 의미가 없어짐
             dropped = []
@@ -474,13 +476,17 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                     "적용하지 않음. 새 좌표계 값으로 orthomosaic()을 다시 실행해야 함"
                 )
         products = render_products(to_absolute(rec, frame), image_dir, proj.ortho_dir, frame.epsg, opts, out, timings)
+        if note:
+            # 바꾼 기본값만 저장한다 (좌표계 변경으로 적용하지 않은 bounds 등은 저장값을 지우지 않음)
+            proj.update_render({**(meta.get("render") or {}), "gsd_scale": opts.gsd_scale,
+                                "cache_budget_mb": opts.cache_budget_mb}, __version__)
 
     timings["total_s"] = time.perf_counter() - t_start
     render_t = {k: timings[k] for k in ("dsm_s", "ortho_s", "finalize_s") if k in timings}
     render_t["render_total_s"] = sum(render_t.values())
     if mode == "base":
         # 보정 취소: 보정 보고서를 지우고 정렬 결과로 다시 만든 정사 모자이크만 보고한다
-        return compose_report(proj, products, render_t, mem.peak)
+        return compose_report(proj, products, render_t, mem.peak, [note] if note else None)
     georef = {
         **{k: v for k, v in base_report.get("georef", {}).items() if k != "note"},
         "epsg": frame.epsg,
@@ -508,4 +514,4 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
         "warnings": warnings,
     }
     proj.save_refine_report({"georef": georef, "refine": refine_block, "warnings": warnings})
-    return compose_report(proj, products, render_t, mem.peak)
+    return compose_report(proj, products, render_t, mem.peak, [note] if note else None)

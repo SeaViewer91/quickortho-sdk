@@ -38,7 +38,7 @@ def main() -> int:
     # 4) 정사 모자이크: 빠른 확인용 저해상도 → 최종 해상도
     quick = project.orthomosaic(qo.OrthoOptions(gsd_scale=4.0))
     print(f"확인용: GSD {quick.gsd_m * 100:.1f} cm, {quick.width}×{quick.height}")
-    final = project.orthomosaic(qo.OrthoOptions(gsd_scale=1.0))  # 원본 GSD 그대로
+    final = project.orthomosaic()  # 기본값: 원본 GSD 그대로
     print(f"최종  : GSD {final.gsd_m * 100:.1f} cm, {final.width}×{final.height} → {final.orthomosaic}")
     return 0
 

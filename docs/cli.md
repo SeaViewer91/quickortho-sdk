@@ -111,7 +111,7 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 |---|---|---|---|
 | `-o`, `--output` | (필수) | ortho, align | 워크스페이스 |
 | `--gsd` | 없음 | ortho, render | 출력 GSD(m). 지정하면 `--gsd-scale`보다 우선 |
-| `--gsd-scale` | 2.0 | ortho, render | 원본 GSD 대비 출력 배율 |
+| `--gsd-scale` | 1.0 | ortho, render | 원본 GSD 대비 출력 배율 (1: 원본 해상도. 0.2.x까지 기본값 2) |
 | `--max-image-size` | 2000 | ortho, align | 특징점 추출용 영상 긴 변(px) |
 | `--max-features` | 4096 | ortho, align | 영상당 최대 특징점 수 |
 | `--threads` | -1 | ortho, align | 스레드 수 (-1은 전체) |
@@ -141,8 +141,8 @@ quickortho preview /data/flight -o /data/flight_out/preview --skip-quicklook | t
 
 # 정렬 한 번, 해상도 두 가지
 quickortho align /data/flight -o /data/flight_out
-quickortho render /data/flight_out --gsd-scale 4
-quickortho render /data/flight_out --gsd-scale 1
+quickortho render /data/flight_out --gsd-scale 4    # 확인용
+quickortho render /data/flight_out                  # 최종 (원본 해상도)
 
 # 서버 사양에 맞춰 품질 높이기
 quickortho ortho /data/flight -o /data/flight_out --max-image-size 3200 --max-features 8192
@@ -210,7 +210,7 @@ while (p.StandardOutput.ReadLine() is { } line) {
 ```text
 호출 측                                     serve 프로세스
    │  (프로세스 시작)                              │
-   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.2.0","warmup_s":1.2}
+   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.3.0","warmup_s":1.2}
    │ ───▶ {"job":1,"argv":["ortho","/data/a","-o","/data/a_out"]}
    │ ◀──── {"job":1,"type":"stage",...}
    │ ◀──── {"job":1,"type":"progress",...}

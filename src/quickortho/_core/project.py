@@ -159,10 +159,15 @@ class Project:
         rec, frame = self.load_base()
         return rec, frame, "base"
 
-    def update_render(self, render: dict) -> None:
-        """마지막 정사 모자이크 생성 옵션을 meta.json에 기록한다 (보정 후 재생성에 같은 옵션을 씀)."""
+    def update_render(self, render: dict, engine_version: str) -> None:
+        """마지막 정사 모자이크 생성 옵션을 meta.json에 기록한다 (보정 후 재생성에 같은 옵션을 씀).
+
+        engine_version: 옵션을 저장한 엔진 버전. 기본값이 바뀐 버전 이전에 저장한 값을 구분하는 데 씀
+        (meta의 engine_version은 정렬한 버전이므로 정사 옵션을 누가 저장했는지 알 수 없음).
+        """
         meta = self.meta()
         meta["render"] = render
+        meta["render_engine_version"] = engine_version
         (self.dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
     # ── 보고서 ──

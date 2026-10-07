@@ -43,9 +43,11 @@ class OrthoOptions:
 
     Attributes:
         gsd_m: 출력 GSD(m/화소). 지정하면 ``gsd_scale``보다 우선함.
-        gsd_scale: ``gsd_m``이 없을 때 원본 GSD에 곱할 배율. 기본값 2는 원본보다 2배 거친 해상도임.
+        gsd_scale: ``gsd_m``이 없을 때 원본 GSD에 곱할 배율. 기본값 1은 원본 해상도임 (0.2.x까지는 2).
+            2로 하면 결과 화소 수가 1/4로 줄고 정사 모자이크 단계가 2~3배 빨라짐.
         keep_work: 중간 산출물(COLMAP DB, 희소 재구성 원본)을 ``<워크스페이스>/work``에 남김.
-        cache_budget_mb: 정사투영 중 축소 영상 캐시에 쓸 메모리 상한(MB).
+        cache_budget_mb: 정사투영 중 영상 캐시에 쓸 메모리 상한(MB). ``None``이면 사용 가능한 메모리의 30%를
+            600~3072 MB 범위로 제한해 씀.
         sfm: SfM 옵션.
         epsg: (정렬) 결과 좌표계. 투영 좌표계만 가능 (예: 5186). ``None``이면 촬영 위치의 UTM.
             정렬 때 정해지므로 바꾸려면 다시 정렬해야 함. GCP 보정을 하면 GCP 좌표계가 우선함.
@@ -61,9 +63,9 @@ class OrthoOptions:
     """
 
     gsd_m: float | None = None
-    gsd_scale: float = 2.0
+    gsd_scale: float = 1.0
     keep_work: bool = False
-    cache_budget_mb: int = 600
+    cache_budget_mb: Optional[int] = None
     sfm: SfmOptions = field(default_factory=SfmOptions)
     epsg: Optional[int] = None
     bounds: Optional[tuple[float, float, float, float]] = None

@@ -16,7 +16,7 @@ project = qo.Project.open("workspace/")
 cameras, (xyz, rgb) = project.cameras(), project.points()          # 카메라 자세(K·dist·R·t), 희소 점군
 ```
 
-> 최신 릴리스는 0.2.0(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
+> 최신 릴리스는 0.3.0(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
 
 ## 주요 기능
 
@@ -56,7 +56,7 @@ pycolmap·rasterio·OpenCV 같은 의존성은 pip가 PyPI에서 OS에 맞게 �
 ```bash
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.2.0/quickortho_sdk-0.2.0-py3-none-any.whl
+pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.3.0/quickortho_sdk-0.3.0-py3-none-any.whl
 quickortho version                   # 설치 확인
 ```
 
@@ -76,10 +76,9 @@ pv = project.preview()                                  # 수 초, 촬영 누락
 print("누락 구역", pv.num_gaps, "곳")
 
 align = project.align(on_event=qo.print_progress)       # SfM (가장 오래 걸림)
-ortho = project.orthomosaic(qo.OrthoOptions(gsd_scale=2.0))
+quick = project.orthomosaic(qo.OrthoOptions(gsd_scale=4.0))      # 확인용 저해상도
+ortho = project.orthomosaic()                                    # SfM 없이 원본 해상도로 다시 생성 (기본값)
 print(ortho.orthomosaic, f"GSD {ortho.gsd_m * 100:.1f} cm")
-
-ortho_fine = project.orthomosaic(qo.OrthoOptions(gsd_scale=1.0))  # SfM 없이 해상도만 바꿔 다시 생성
 ```
 
 명령줄에서도 같은 처리를 할 수 있음.

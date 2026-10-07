@@ -62,7 +62,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     def add_render(p: argparse.ArgumentParser) -> None:
         p.add_argument("--gsd", type=float, default=None, help="출력 GSD(m). 기본값은 원본 GSD × --gsd-scale")
-        p.add_argument("--gsd-scale", type=float, default=2.0, help="원본 GSD 대비 출력 배율 (기본 2)")
+        p.add_argument("--gsd-scale", type=float, default=1.0, help="원본 GSD 대비 출력 배율 (기본 1: 원본 해상도)")
         p.add_argument("--bounds", type=float, nargs=4, default=None, metavar=("XMIN", "YMIN", "XMAX", "YMAX"),
                        help="결과 범위 (결과 좌표계)")
         p.add_argument("--grid-origin", type=float, nargs=2, default=(0.0, 0.0), metavar=("X", "Y"),
@@ -150,7 +150,7 @@ def _options(args: argparse.Namespace):
     bounds = getattr(args, "bounds", None)
     return OrthoOptions(
         gsd_m=getattr(args, "gsd", None),
-        gsd_scale=getattr(args, "gsd_scale", 2.0),
+        gsd_scale=getattr(args, "gsd_scale", 1.0),
         keep_work=getattr(args, "keep_work", False),
         sfm=sfm,
         epsg=getattr(args, "epsg", None),

@@ -118,7 +118,8 @@ def build_dsm(
     pts: np.ndarray,
     bounds: tuple[float, float, float, float],
     res: float,
-    smooth_px: int = 5,
+    smooth_px: int = 3,
+    sigma: float = 0.5,
 ) -> Dsm:
     """희소 점군을 격자로 보간해 간이 DSM을 만든다.
 
@@ -143,8 +144,9 @@ def build_dsm(
         z = _fill_smooth(z)
         lo, hi = np.percentile(pts[:, 2], [1, 99])
         z = np.clip(z, lo, hi)
-    # 급격한 높이 변화는 정사영상에 번짐을 만들므로 한 번 더 부드럽게 만든다
-    z = ndimage.gaussian_filter(z, sigma=1.0, mode="nearest")
+    # 보간 격자의 계단을 약하게만 누른다 (강하게 하면 작은 기복이 사라져 영상 간 어긋남이 커짐)
+    if sigma > 0:
+        z = ndimage.gaussian_filter(z, sigma=sigma, mode="nearest")
     return Dsm(z=z.astype(np.float32), x0=float(gx[0]), y0=float(gy[0]), res=res, num_points=len(pts))
 
 

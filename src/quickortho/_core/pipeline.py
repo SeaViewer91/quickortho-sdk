@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 import shutil
 import threading
@@ -176,9 +177,45 @@ def run_render(
     timings: dict[str, float] = {}
     with PeakMemory() as mem:
         products = render_products(rec_abs, image_dir, proj.ortho_dir, epsg, opts, out, timings)
-    proj.update_render(opts.render_dict())
+    proj.update_render(opts.render_dict(), __version__)
     timings["render_total_s"] = time.perf_counter() - t_start
     return compose_report(proj, products, timings, mem.peak)
+
+
+def _version_tuple(v) -> tuple[int, int, int]:
+    """"0.2.1", "0.3.0rc1", "0.2.0.dev0", "0.3"에서 (주, 부, 수) 버전을 얻는다. 읽을 수 없으면 (0, 0, 0)."""
+    m = re.match(r"\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?", str(v))
+    if not m:
+        return (0, 0, 0)
+    return tuple(int(x or 0) for x in m.groups())  # type: ignore[return-value]
+
+
+def saved_render_options(meta: dict) -> tuple[OrthoOptions, str | None]:
+    """meta.json에 저장된 정사 모자이크 옵션 (보정 후 재생성용). 반환: (옵션, 바꾼 내용 안내 또는 None)
+
+    0.3.0 미만이 저장한 옵션에는 당시 기본값(GSD 배율 2, 캐시 600 MB)이 그대로 들어 있어 사용자가 고른 값과
+    구분되지 않는다. 그 기본값과 같으면 새 기본값(원본 해상도, 캐시 자동)으로 바꾸고, 다른 값은 그대로 쓴다.
+    저장한 버전은 render_engine_version(0.3.0부터 기록), 없으면 정렬한 엔진 버전으로 판단한다.
+    """
+    render = dict(meta.get("render") or {})
+    ver = _version_tuple(meta.get("render_engine_version") or meta.get("engine_version", "0"))
+    changed = []
+    gsd_changed = False
+    if render and ver < (0, 3, 0):
+        if render.get("gsd_m") is None and render.get("gsd_scale", 2.0) == 2.0:
+            render["gsd_scale"] = 1.0
+            gsd_changed = True
+            changed.append("GSD 배율 2 → 1(원본 해상도)")
+        if render.get("cache_budget_mb") == 600:
+            render["cache_budget_mb"] = None
+            changed.append("영상 캐시 600 MB → 자동")
+    note = None
+    if changed:
+        note = (f"이전 버전({'.'.join(map(str, ver))})이 저장한 정사 옵션의 당시 기본값을 새 기본값으로 바꿔 다시 만듦: "
+                f"{', '.join(changed)}")
+        if gsd_changed:
+            note += ". 이전 해상도로 만들려면 다른 옵션은 그대로 두고 gsd_scale=2로 orthomosaic()을 다시 실행함"
+    return OrthoOptions.from_render_dict(render), note
 
 
 def align_report_from_project(proj: Project) -> dict:
@@ -219,11 +256,15 @@ def align_report_from_project(proj: Project) -> dict:
     }
 
 
-def compose_report(proj: Project, products: dict, render_timings: dict[str, float], render_peak: int) -> dict:
+def compose_report(
+    proj: Project, products: dict, render_timings: dict[str, float], render_peak: int,
+    extra_warnings: list[str] | None = None,
+) -> dict:
     """정렬 보고서 + 마지막 정사 모자이크 결과 + (보정했으면) 보정 결과를 합쳐 report.json을 쓴다.
 
     timings_s: 정렬 단계 시간 + 이번 정사 모자이크 단계 시간. total_s는 둘의 합이다.
     peak_memory_mb: 정렬 단계와 이번 정사 모자이크 단계 중 큰 값.
+    extra_warnings: 이번 실행에만 해당하는 경고 (저장된 보고서에 남기지 않으므로 다음 실행의 보고서에는 나오지 않음).
     """
     align = proj.align_report()
     if not align:
@@ -257,7 +298,7 @@ def compose_report(proj: Project, products: dict, render_timings: dict[str, floa
         warnings += part.get("warnings", [])
     else:
         report.pop("refine", None)
-    report["warnings"] = warnings
+    report["warnings"] = warnings + list(extra_warnings or [])
     (proj.ortho_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
@@ -308,7 +349,8 @@ def render_products(
     area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
     dsm_info: dict = {"mode": kind}
     if kind == "sparse":
-        dsm_res = max(0.5, 1.5 * math.sqrt(area / len(pts)))
+        # 점 간격의 절반 격자 (0.2.x의 1.5배 격자 + 강한 평활화는 갈대·관목·작은 기복의 높이를 지워 영상 간 어긋남을 키웠음)
+        dsm_res = max(0.5, 0.5 * math.sqrt(area / len(pts)))
         dsm = build_dsm(pts, bounds, dsm_res)
     elif kind == "plane":
         dsm_res = max(0.5, math.sqrt(area) / 256)

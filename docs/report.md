@@ -27,11 +27,12 @@ with rasterio.open(result.orthomosaic) as ds:
 ## 2. `report.json`
 
 `OrthoResult.report`와 같은 내용임. 정렬만 한 상태에서는 정렬 항목(`input`, `sfm`, `georef`, `timings_s`, `peak_memory_mb`, `warnings`)만 있음.
+아래 예는 Mavic 2 13장을 `gsd_scale=2`로 만든 결과임 (기본값 1이면 `ortho.width`·`height`가 약 2배, `gsd_m`이 `source_gsd_m`과 같음).
 
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.2.0",
+  "engine_version": "0.3.0",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,
@@ -50,10 +51,10 @@ with rasterio.open(result.orthomosaic) as ds:
     "epsg": 32652, "gps_residual_rms_m": 0.156, "num_aligned": 13,
     "note": "절대 위치 정확도는 GNSS 수준(수 m)임. 정밀 위치가 필요하면 GCP 필요"
   },
-  "dsm": {"mode": "sparse", "resolution_m": 5.26, "num_points": 7085},
+  "dsm": {"mode": "sparse", "resolution_m": 1.75, "num_points": 7085},
   "ortho": {
     "width": 3812, "height": 3688, "gsd_m": 0.0787, "covered_area_m2": 79027.5,
-    "tiles": 64, "source_gsd_m": 0.0393
+    "tiles": 64, "blend": "seamline", "source_gsd_m": 0.0393
   },
   "outputs": {
     "orthomosaic": "/data/out/orthomosaic.tif",
@@ -104,6 +105,7 @@ with rasterio.open(result.orthomosaic) as ds:
 | `ortho.source_gsd_m` | 원본 GSD(m) |
 | `ortho.covered_area_m2` | 자료가 있는 면적(m²) |
 | `ortho.tiles` | 처리한 512px 타일 수 |
+| `ortho.blend` | 영상 합성 방식. 0.3.0부터 `seamline`(화소마다 영상 하나, 경계만 섞음). 0.2.x 결과에는 없음(가중 평균) |
 | `outputs.*` | 결과 파일 절대 경로 |
 | `preview_corners_lonlat` | 결과 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
 | `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계. `total_s`는 두 단계의 합 |

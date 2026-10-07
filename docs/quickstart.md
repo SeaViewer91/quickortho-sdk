@@ -109,8 +109,8 @@ print(align.num_registered, "/", align.num_images, "장 정합")
 # (4) 정사 모자이크: 확인용 (원본 GSD × 4)
 quick = project.orthomosaic(qo.OrthoOptions(gsd_scale=4))
 
-# (5) 정사 모자이크: 최종 (원본 GSD 그대로). 정렬을 다시 하지 않으므로 빠름
-final = project.orthomosaic(qo.OrthoOptions(gsd_scale=1))
+# (5) 정사 모자이크: 최종 (기본값, 원본 GSD 그대로). 정렬을 다시 하지 않으므로 빠름
+final = project.orthomosaic()
 ```
 
 나중에 같은 워크스페이스를 다시 열 때는 `Project.open`을 씀.
@@ -147,8 +147,8 @@ except qo.QuickOrthoError as exc:   # 그 밖의 SDK 오류
 ```bash
 quickortho doctor                                      # 설치 환경 진단
 quickortho preview flight_0925 -o flight_0925_out/preview
-quickortho ortho flight_0925 -o flight_0925_out --gsd-scale 2
-quickortho render flight_0925_out --gsd-scale 1       # 정렬 없이 해상도만 바꿔 다시 생성
+quickortho ortho flight_0925 -o flight_0925_out --gsd-scale 4   # 확인용 (기본은 원본 해상도)
+quickortho render flight_0925_out                     # 정렬 없이 원본 해상도로 다시 생성
 ```
 
 자세한 내용은 [명령줄과 serve 프로토콜](cli.md)을 참고함.
