@@ -60,6 +60,8 @@ class OrthoOptions:
         dsm_z: (정사) ``dsm="plane"``일 때 평면 높이(결과 좌표계 높이 기준, m). ``None``이면 희소 점군 높이의 중앙값.
         dsm_vertical_align: (정사) 외부 DSM을 쓸 때 희소 점군과 높이 기준을 맞출지 여부.
             외부 DEM(해발고)과 GPS 고도(타원체고 등)의 기준 차이를 중앙값 차이만큼 보정함.
+        color_balance: (정사) 영상 간 밝기·색 차이 보정. 노출·지면 반사 차이로 심라인 이음매에 생기는
+            밝기 단차를 영상별 완만한 이득 곡면으로 없앰. 세부 질감은 바꾸지 않음. 영상이 1장이면 하지 않음.
     """
 
     gsd_m: float | None = None
@@ -73,6 +75,7 @@ class OrthoOptions:
     dsm: Union[str, Path] = "sparse"
     dsm_z: Optional[float] = None
     dsm_vertical_align: bool = True
+    color_balance: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -85,6 +88,7 @@ class OrthoOptions:
             "gsd_m": self.gsd_m, "gsd_scale": self.gsd_scale, "cache_budget_mb": self.cache_budget_mb,
             "bounds": list(self.bounds) if self.bounds else None, "grid_origin": list(self.grid_origin),
             "dsm": str(self.dsm), "dsm_z": self.dsm_z, "dsm_vertical_align": self.dsm_vertical_align,
+            "color_balance": self.color_balance,
         }
 
     @classmethod

@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.3.0
+대상 버전: 0.3.1
 
 ## 목차
 
@@ -182,7 +182,7 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦. SfM을 다시 하지 않으므로 해상도만 바꿀 때 빠름.
 
 - `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`,
-  `dsm_z`, `dsm_vertical_align`을 씀
+  `dsm_z`, `dsm_vertical_align`, `color_balance`를 씀
 - 여기서 쓴 옵션은 `project/meta.json`에 저장되어, 이후 `refine()`이 정사 모자이크를 다시 만들 때도 같은 옵션을 씀
 - 결과물은 임시 파일에 먼저 쓰고 마지막에 교체하므로, 중단·실패해도 이전 결과물이 유지됨
 - 반환: [`OrthoResult`](#orthoresult)
@@ -342,10 +342,11 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `dsm` | `"sparse"` | orthomosaic | 지형면: `"sparse"`(희소 점군 보간), `"plane"`(수평면), 외부 DSM/DEM GeoTIFF 경로 |
 | `dsm_z` | `None` | orthomosaic | `dsm="plane"`의 높이(m, 결과 좌표계 높이 기준). `None`이면 희소 점군 높이 중앙값 |
 | `dsm_vertical_align` | `True` | orthomosaic | 외부 DSM을 희소 점군 높이에 맞춰 중앙값 차이만큼 올리거나 내림 (해발고·타원체고 차이 보정) |
+| `color_balance` | `True` | orthomosaic | 영상 간 밝기·색 차이 보정 (심라인 이음매의 밝기 단차 제거, [원리](concepts.md#밝기색-보정)). 0.3.1부터 |
 
 - 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 경위도 EPSG, 잘못된 `bounds`, 없는 DSM 파일 등
 - `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
-  `dsm_vertical_align`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
+  `dsm_vertical_align`, `color_balance`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
   단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
   새 좌표계 값으로 `orthomosaic()`을 다시 실행함
 - 0.3.0 미만이 저장한 옵션 중 당시 기본값과 같은 값(`gsd_m` 없이 `gsd_scale=2`, `cache_budget_mb=600`)은 `refine()`의
@@ -539,7 +540,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 ### `STAGES`
 
 단계 이름 → 한국어 설명 dict. 키: `scan`, `footprints`, `quicklook`, `features`, `matching`, `mapping`, `georef`,
-`dsm`, `ortho`, `finalize`, `refine`.
+`dsm`, `color`, `ortho`, `finalize`, `refine`.
 
 ### `print_progress(event)`
 

@@ -146,6 +146,7 @@ def render_orthomosaic(
     feather_px: float = 6.0,
     cache_budget_mb: int | None = None,
     block: int = 4,
+    gains: dict[str, np.ndarray] | None = None,
 ) -> dict:
     """화소마다 연직에 가장 가까운 영상 하나로 칠하고, 영상 사이 경계에서만 좁게 섞는다 (seamline 방식).
 
@@ -156,6 +157,7 @@ def render_orthomosaic(
     - 경계: 점수 차가 작은 곳(경계선 양쪽 약 feather_px 출력 화소)만 지수 가중으로 섞는다
     - 화소마다 같은 규칙으로 정하므로 타일 경계에서도 결과가 이어진다
     - 타일은 block×block 묶음 단위로 처리해 같은 영상을 연달아 쓰게 한다 (원본 해상도 영상 캐시 재사용)
+    - gains: 영상별 저주파 이득 맵(color.estimate_gains). 주면 읽은 색에 곱해 영상 간 밝기 단차를 없앤다
     """
     xmin, ymin, xmax, ymax = bounds
     width = int(math.ceil((xmax - xmin) / gsd))
@@ -211,7 +213,7 @@ def render_orthomosaic(
                 (vb[:, 0] < bx1) & (vb[:, 2] > bx0) & (vb[:, 1] < by1) & (vb[:, 3] > by0)
             )[0]
             if len(cand):
-                rgba = _render_tile([views[i] for i in cand], dsm, cache, bx0, by1, gsd, tw, th, temp)
+                rgba = _render_tile([views[i] for i in cand], dsm, cache, bx0, by1, gsd, tw, th, temp, gains)
                 if rgba is not None:
                     covered += int((rgba[3] > 0).sum())
                     dst.write(rgba, window=Window(c0, r0, tw, th))
@@ -226,6 +228,7 @@ def render_orthomosaic(
         "covered_area_m2": covered * gsd * gsd,
         "tiles": total,
         "blend": "seamline",
+        "color_balance": gains is not None,
     }
 
 
@@ -306,6 +309,7 @@ def _render_tile(
     tw: int,
     th: int,
     temp: float,
+    gains: dict[str, np.ndarray] | None = None,
 ) -> np.ndarray | None:
     views = _select_views(views, dsm, x0, y1, gsd, tw, th, temp)
     if not views:
@@ -330,6 +334,10 @@ def _render_tile(
         sy = img.shape[0] / H
         # 이 영상이 쓰이는 화소만 다시 샘플링 (영상 하나로 칠하므로 대부분의 화소는 한 영상에서만 옴)
         col = _sample(img, u[idx] * sx - 0.5, vv[idx] * sy - 0.5)
+        g = gains.get(v.name) if gains else None
+        if g is not None:
+            gh, gw = g.shape[:2]
+            col *= _sample(g, u[idx] * (gw / W) - 0.5, vv[idx] * (gh / H) - 0.5)
         acc[idx] += col * w[idx, None]
         wsum[idx] += w[idx]
 

@@ -58,7 +58,7 @@ def test_process_end_to_end(processed, scene):
     assert rep["timings_s"]["total_s"] > 0 and res.peak_memory_mb > 0
     # 단계는 정해진 순서로 한 번씩 시작함
     stages = [e.stage for e in events if e.type == "stage"]
-    assert stages == ["scan", "features", "matching", "mapping", "georef", "dsm", "ortho", "finalize"]
+    assert stages == ["scan", "features", "matching", "mapping", "georef", "dsm", "color", "ortho", "finalize"]
     assert all(s in qo.STAGES for s in stages)
     fr = [e.fraction for e in events if e.type == "progress"]
     assert fr and all(0.0 <= f <= 1.0 for f in fr)
@@ -80,7 +80,7 @@ def test_rerender_with_other_gsd_skips_sfm(workspace, processed):
     p = qo.Project.open(workspace)
     events: list[qo.Event] = []
     r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4.0), on_event=events.append)
-    assert [e.stage for e in events if e.type == "stage"] == ["dsm", "ortho", "finalize"]
+    assert [e.stage for e in events if e.type == "stage"] == ["dsm", "color", "ortho", "finalize"]
     assert r.gsd_m == pytest.approx(first.gsd_m * 4, rel=1e-6)  # 기본값 gsd_scale=1 대비 4배
     assert abs(r.width - first.width / 4) <= 2
     assert r.report["sfm"]["num_registered"] == 12  # 정렬 보고서는 유지됨
@@ -111,13 +111,14 @@ def test_cancel_before_start(scene, tmp_path):
     assert not (tmp_path / "ws" / "project").exists()
 
 
-def test_cancel_during_render_keeps_previous_result(workspace):
+@pytest.mark.parametrize("stage", ["color", "ortho"])
+def test_cancel_during_render_keeps_previous_result(workspace, stage):
     p = qo.Project.open(workspace)
     before = _sha(workspace / "orthomosaic.tif"), _sha(workspace / "dsm.tif")
     tok = qo.CancelToken()
 
     def on_event(ev: qo.Event) -> None:
-        if ev.type == "progress" and ev.stage == "ortho":
+        if ev.type == "progress" and ev.stage == stage:
             tok.cancel()  # 다음 확인 지점에서 Cancelled
 
     with pytest.raises(qo.Cancelled):
@@ -381,6 +382,42 @@ def test_sparse_dsm_grid_is_half_point_spacing(processed):
     assert rep["ortho"]["gsd_m"] == pytest.approx(rep["ortho"]["source_gsd_m"])  # 기본값: 원본 해상도
 
 
+def test_color_balance_in_report(processed):
+    rep = processed[2].report
+    assert rep["ortho"]["color_balance"] is True
+    c = rep["ortho"]["color"]
+    assert c["images"] == 12 and c["cell_m"] > 0 and c["grid"] == [64, 48]
+    assert 0.5 <= c["gain_p5"] <= c["gain_p95"] <= 2.0
+    assert rep["timings_s"]["color_s"] > 0
+
+
+def test_color_balance_off_is_saved_and_used_by_refine(workspace):
+    """끄면 color 단계를 건너뛰고, 저장된 옵션으로 보정 후 재생성할 때도 꺼진 채로 만든다."""
+    p = qo.Project.open(workspace)
+    events: list[qo.Event] = []
+    r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4.0, color_balance=False), on_event=events.append)
+    assert [e.stage for e in events if e.type == "stage"] == ["dsm", "ortho", "finalize"]
+    assert r.report["ortho"]["color_balance"] is False and "color" not in r.report["ortho"]
+    assert "color_s" not in r.report["timings_s"]
+    meta = json.loads((workspace / "project" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["render"]["color_balance"] is False
+    p.set_edits(max_reproj_error_px=1.0)
+    events.clear()
+    rr = p.refine(on_event=events.append)
+    assert "color" not in [e.stage for e in events if e.type == "stage"]
+    assert rr.ortho.report["ortho"]["color_balance"] is False
+
+
+def test_color_balance_default_for_old_saved_options():
+    """0.3.0 이하가 저장한 옵션에는 color_balance가 없으므로 기본값(켬)을 씀."""
+    from quickortho._core.pipeline import saved_render_options
+
+    o, note = saved_render_options({"engine_version": "0.3.0", "render_engine_version": "0.3.0",
+                                    "render": {"gsd_scale": 1.0, "cache_budget_mb": None}})
+    assert o.color_balance is True and note is None
+    assert qo.OrthoOptions.from_render_dict({"color_balance": False}).color_balance is False
+
+
 def test_cache_budget_validation(workspace):
     with pytest.raises(qo.InputError) as ei:
         qo.Project.open(workspace).orthomosaic(qo.OrthoOptions(cache_budget_mb=0))
@@ -394,11 +431,18 @@ def _lines(text: str) -> list[dict]:
     return [json.loads(ln) for ln in text.strip().splitlines()]
 
 
+def test_cli_no_color_balance(workspace, capsys):
+    assert main(["render", str(workspace), "--gsd-scale", "4", "--no-color-balance", "--format", "json"]) == 0
+    ev = _lines(capsys.readouterr().out)
+    assert "color" not in {e["name"] for e in ev if e["type"] == "stage"}
+    assert ev[-1]["data"]["ortho"]["color_balance"] is False
+
+
 def test_cli_render(workspace, capsys):
     assert main(["render", str(workspace), "--gsd-scale", "4"]) == 0
     ev = _lines(capsys.readouterr().out)
     assert ev[-1]["type"] == "result" and ev[-1]["command"] == "render"
-    assert {e["name"] for e in ev if e["type"] == "stage"} == {"dsm", "ortho", "finalize"}
+    assert {e["name"] for e in ev if e["type"] == "stage"} == {"dsm", "color", "ortho", "finalize"}
 
 
 def test_cli_error_has_code(tmp_path, capsys):

@@ -34,23 +34,24 @@ qo.process("flight", "out", on_event=on_event)
 `process()` 기준으로 단계는 다음 순서로 한 번씩 시작함.
 
 ```text
-scan → features → matching → mapping → georef → dsm → ortho → finalize
+scan → features → matching → mapping → georef → dsm → color → ortho → finalize
 ```
 
 - `mapping`은 전역 SfM이 실패해 증분 SfM으로 다시 시도하면 한 번 더 시작함
-- `orthomosaic()`만 부르면 `dsm → ortho → finalize`
-- `refine()`은 `refine → refine → dsm → ortho → finalize` (준비, 번들 조정)
+- `orthomosaic()`만 부르면 `dsm → color → ortho → finalize`
+- `refine()`은 `refine → refine → dsm → color → ortho → finalize` (준비, 번들 조정)
+- `color`는 `color_balance=False`이거나 정합된 영상이 1장이면 나오지 않음
 - `preview()`는 `scan → footprints → quicklook`(quicklook은 `quicklook=True`일 때만)
 
 ### 전체 진행률 계산
 
 단계마다 걸리는 시간이 크게 다르므로, 전체 진행률 막대가 필요하면 단계별 가중치를 두는 것을 권장함.
 아래 가중치는 Mavic 2 Pro 18장·M1 8GB 측정치(각 단계가 전체 시간에서 차지한 비율, %)를 반올림한 값임.
-영상이 많아지면 `matching`·`mapping` 비중이 커지므로 대략값으로만 씀.
+영상이 많아지면 `matching`·`mapping` 비중이 커지므로 대략값으로만 씀. `color`(0.3.1)는 정사투영의 약 3~10%라 3으로 둠.
 
 ```python
 WEIGHTS = {"scan": 1, "features": 16, "matching": 6, "mapping": 12, "georef": 1,
-           "dsm": 1, "ortho": 40, "finalize": 24}
+           "dsm": 1, "color": 3, "ortho": 40, "finalize": 24}
 ORDER = list(WEIGHTS)
 
 class Overall:
@@ -74,6 +75,7 @@ class Overall:
 ```
 
 `mapping`·`georef` 단계는 progress 이벤트가 없고, `dsm`·`finalize`는 단계가 끝날 때 한 번만 나오므로 그동안 값이 멈춰 있음.
+`color`의 `total`은 영상 수의 2배임 (투영 통과와 밝기 읽기 통과).
 처리 함수가 반환되면 1.0으로 표시함.
 
 ### 콜백 작성 규칙
@@ -108,6 +110,7 @@ th.join()           # 처리 스레드에서 qo.Cancelled 발생 후 종료
 |---|---|
 | `scan`, `ortho`, `quicklook` | 진행률 1% 단위 (예: 타일 500개면 타일 5개마다) |
 | `dsm` | DSM 계산이 끝난 뒤 (보통 1초 이내) |
+| `color` | 영상 단위 (두 번 통과하며 영상 수 × 2의 1% 단위로 확인. 영상 1장 처리는 보통 1초 이내) |
 | `features`, `matching` | **현재 COLMAP 호출이 끝난 뒤**. COLMAP 계산은 중간에 끊을 수 없음 |
 | `mapping` | SfM 계산이 끝난 뒤 |
 | `georef` | 좌표 정렬이 끝난 뒤 (1초 이내) |

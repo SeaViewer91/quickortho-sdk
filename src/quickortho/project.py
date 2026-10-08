@@ -373,7 +373,7 @@ class Project:
         """현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦.
 
         SfM을 다시 하지 않으므로 GSD만 바꿔 다시 만들 때 빠름. ``options``에서는 ``gsd_m``, ``gsd_scale``,
-        ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``을 씀.
+        ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``, ``color_balance``를 씀.
         여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
 
         Raises:

@@ -122,6 +122,7 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | `--dsm` | sparse | ortho, render | `sparse`, `plane`, 또는 외부 DSM GeoTIFF 경로 |
 | `--dsm-z` | 없음 | ortho, render | `--dsm plane`의 높이(m) |
 | `--no-dsm-vertical-align` | 끔 | ortho, render | 외부 DSM 높이 기준 자동 보정 끄기 |
+| `--no-color-balance` | 끔 | ortho, render | 영상 간 밝기·색 보정 끄기 (기본은 보정함) |
 
 `export`: 카메라 CSV는 `name,x,y,z,omega,phi,kappa`, JSON은 영상별 `K`, `dist`, `R`, `t`, `center`, `opk_deg` 등 전체,
 PLY는 희소 점군(좌표 double, 색 포함). 형식은 [산출물을 변수로 쓰기](outputs.md) 참고.
@@ -210,7 +211,7 @@ while (p.StandardOutput.ReadLine() is { } line) {
 ```text
 호출 측                                     serve 프로세스
    │  (프로세스 시작)                              │
-   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.3.0","warmup_s":1.2}
+   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.3.1","warmup_s":1.2}
    │ ───▶ {"job":1,"argv":["ortho","/data/a","-o","/data/a_out"]}
    │ ◀──── {"job":1,"type":"stage",...}
    │ ◀──── {"job":1,"type":"progress",...}

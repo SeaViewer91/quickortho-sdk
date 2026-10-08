@@ -70,6 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dsm", default="sparse", help="지형면: sparse(기본), plane, 또는 외부 DSM GeoTIFF 경로")
         p.add_argument("--dsm-z", type=float, default=None, help="--dsm plane의 평면 높이(m)")
         p.add_argument("--no-dsm-vertical-align", action="store_true", help="외부 DSM 높이 기준 자동 보정 끄기")
+        p.add_argument("--no-color-balance", action="store_true", help="영상 간 밝기·색 차이 보정 끄기")
 
     def add_epsg(p: argparse.ArgumentParser) -> None:
         p.add_argument("--epsg", type=int, default=None, help="결과 좌표계 EPSG (투영 좌표계, 기본 UTM)")
@@ -159,6 +160,7 @@ def _options(args: argparse.Namespace):
         dsm=getattr(args, "dsm", "sparse"),
         dsm_z=getattr(args, "dsm_z", None),
         dsm_vertical_align=not getattr(args, "no_dsm_vertical_align", False),
+        color_balance=not getattr(args, "no_color_balance", False),
     )
 
 

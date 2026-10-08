@@ -27,12 +27,13 @@ with rasterio.open(result.orthomosaic) as ds:
 ## 2. `report.json`
 
 `OrthoResult.report`와 같은 내용임. 정렬만 한 상태에서는 정렬 항목(`input`, `sfm`, `georef`, `timings_s`, `peak_memory_mb`, `warnings`)만 있음.
-아래 예는 Mavic 2 13장을 `gsd_scale=2`로 만든 결과임 (기본값 1이면 `ortho.width`·`height`가 약 2배, `gsd_m`이 `source_gsd_m`과 같음).
+아래 예는 Mavic 2 13장을 `gsd_scale=2`, `color_balance=False`로 만든 결과임 (기본값이면 `ortho.width`·`height`가 약 2배,
+`gsd_m`이 `source_gsd_m`과 같고, `ortho.color`와 `timings_s.color_s`가 추가됨).
 
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.3.0",
+  "engine_version": "0.3.1",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,
@@ -54,7 +55,7 @@ with rasterio.open(result.orthomosaic) as ds:
   "dsm": {"mode": "sparse", "resolution_m": 1.75, "num_points": 7085},
   "ortho": {
     "width": 3812, "height": 3688, "gsd_m": 0.0787, "covered_area_m2": 79027.5,
-    "tiles": 64, "blend": "seamline", "source_gsd_m": 0.0393
+    "tiles": 64, "blend": "seamline", "color_balance": false, "source_gsd_m": 0.0393
   },
   "outputs": {
     "orthomosaic": "/data/out/orthomosaic.tif",
@@ -106,9 +107,11 @@ with rasterio.open(result.orthomosaic) as ds:
 | `ortho.covered_area_m2` | 자료가 있는 면적(m²) |
 | `ortho.tiles` | 처리한 512px 타일 수 |
 | `ortho.blend` | 영상 합성 방식. 0.3.0부터 `seamline`(화소마다 영상 하나, 경계만 섞음). 0.2.x 결과에는 없음(가중 평균) |
+| `ortho.color_balance` | 밝기·색 보정을 적용했는지 (0.3.1부터). `color_balance=False`이거나 영상이 1장이면 `false` |
+| `ortho.color` | (보정 시) `{"cell_m": 보정 격자 셀 크기(m), "grid": [64, 48] 영상별 이득 맵 크기, "images": 이득 맵을 만든 영상 수, "gain_p5", "gain_p95": 이득(세 채널 평균)의 5·95 백분위}`. 1에서 멀수록 영상 간 밝기 차이가 컸다는 뜻임. 이득 맵을 만든 영상이 없으면 `color` 항목 없이 `color_balance`가 `false`임 |
 | `outputs.*` | 결과 파일 절대 경로 |
 | `preview_corners_lonlat` | 결과 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
-| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계. `total_s`는 두 단계의 합 |
+| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합 |
 | `peak_memory_mb` | 정렬·마지막 정사 모자이크 중 최대 메모리(RSS, MB) |
 | `warnings` | 경고 (정렬 경고 + 보정 경고) |
 | `refine` | (보정 후) 보정 결과. 아래 표 |
@@ -133,7 +136,7 @@ with rasterio.open(result.orthomosaic) as ds:
 | `before`, `after` | 보정 전후 재투영 통계 `{"num_points", "num_observations", "mean_px", "rmse_px", "p95_px", "max_px"}` |
 | `gcps` | GCP별 오차 표 (`RefineResult.gcps`와 같음) |
 | `gcp_summary` | `{"control": {...}, "check": {...}}` 역할별 RMSE(m) |
-| `timings_s` | 보정 단계별 시간 (`adjust_s`, `dsm_s`, `ortho_s`, `finalize_s`, `total_s`) |
+| `timings_s` | 보정 단계별 시간 (`adjust_s`, `dsm_s`, `color_s`, `ortho_s`, `finalize_s`, `total_s`) |
 | `peak_memory_mb` | 보정 중 최대 메모리 |
 | `warnings` | 보정 경고 |
 

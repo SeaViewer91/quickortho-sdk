@@ -186,3 +186,58 @@ def test_seamline_independent_of_tiling(tmp_path: Path):
 
 def test_default_cache_budget_in_range():
     assert 600 <= default_cache_budget_mb() <= 3072
+
+
+def test_color_balance_removes_brightness_step(tmp_path: Path):
+    """노출이 다른 두 영상(밝기 100, 140)을 이으면 심라인에서 밝기 단차가 생긴다. 이득 맵으로 단차를 없앤다."""
+    from quickortho._core.color import estimate_gains
+
+    img_dir = tmp_path / "imgs"
+    img_dir.mkdir()
+    a = _solid_view(img_dir, "a.png", (100, 100, 100), -40.0)
+    b = _solid_view(img_dir, "b.png", (140, 140, 140), 40.0)
+    dsm = Dsm(z=np.zeros((3, 3), np.float32), x0=-200, y0=100, res=200, num_points=0)
+    bounds = (-140, -50, 140, 50)
+
+    def render(gains, name):
+        out = tmp_path / name
+        stats = render_orthomosaic(
+            [a, b], dsm, img_dir, out, CRS.from_epsg(32652), gsd=1.0, src_gsd=1.0,
+            bounds=bounds, out=Emitter(io.StringIO()), tile=64, gains=gains,
+        )
+        assert stats["color_balance"] is (gains is not None)
+        with rasterio.open(out) as ds:
+            return ds.read(1).astype(float)
+
+    gains, stats = estimate_gains(
+        [a, b], dsm, img_dir, bounds, 1.0, Emitter(io.StringIO()), min_cell_px=2.0, wide_frac=0.3,
+    )
+    assert set(gains) == {"a.png", "b.png"} and stats["images"] == 2
+    assert gains["a.png"].shape == (48, 64, 3) and gains["a.png"].dtype == np.float32
+    plain = render(None, "plain.tif")
+    balanced = render(gains, "balanced.tif")
+    seam = 140  # x = 0
+    # 이음매 양쪽 바로 옆(±3화소)의 차이. 보정 후에는 넓은 범위에 걸친 완만한 변화만 남는다
+    step = lambda img: abs(img[20:80, seam + 2:seam + 4].mean() - img[20:80, seam - 4:seam - 2].mean())
+    assert step(plain) > 20  # 심라인 페더링 폭(수 화소) 안에서 밝기 40 차이가 그대로 드러남
+    assert step(balanced) < 5
+    # 겹치지 않는 바깥쪽은 원래 밝기에 가깝게 유지 (전체 톤을 바꾸지 않음)
+    assert abs(balanced[50, 5] - 100) < 12 and abs(balanced[50, 275] - 140) < 12
+
+
+def test_color_balance_reports_progress_to_end(tmp_path: Path):
+    """촬영 범위가 결과 범위 밖인 영상이 마지막이어도 진행률이 끝까지 올라간다 (중단 확인 지점)."""
+    import json
+    from quickortho._core.color import estimate_gains
+
+    img_dir = tmp_path / "imgs"
+    img_dir.mkdir()
+    views = [_solid_view(img_dir, f"{i}.png", (100 + 20 * i,) * 3, cx) for i, cx in enumerate((-40, 40, 900))]
+    dsm = Dsm(z=np.zeros((3, 3), np.float32), x0=-200, y0=100, res=200, num_points=0)
+    buf = io.StringIO()
+    gains, stats = estimate_gains(views, dsm, img_dir, (-140, -50, 140, 50), 1.0, Emitter(buf),
+                                  min_cell_px=2.0, wide_frac=0.3)
+    assert set(gains) == {"0.png", "1.png"} and stats["images"] == 2
+    ev = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+    prog = [e for e in ev if e.get("type") == "progress" and e.get("stage") == "color"]
+    assert prog and prog[-1]["current"] == prog[-1]["total"] == 6  # 두 번 통과 (영상 3장 × 2)

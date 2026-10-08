@@ -60,6 +60,25 @@ def test_fixed_grid(workspace):
     assert meta["render"]["bounds"] == list(fixed)
 
 
+def test_color_balance_independent_of_bounds(workspace):
+    """밝기·색 보정 이득은 촬영 범위 전체로 구하므로, 범위를 나눠 만든 결과가 한 번에 만든 결과와 화소 단위로 같다.
+
+    지형면이 범위에 따라 달라지지 않도록 평면 DSM을 쓴다 (희소 점군 DSM은 결과 범위로 보간하므로 조금 달라질 수 있음).
+    """
+    p = qo.Project.open(workspace)
+    opts = dict(gsd_m=0.5, dsm="plane", dsm_z=10.0)
+    full = p.orthomosaic(qo.OrthoOptions(**opts))
+    assert full.report["ortho"]["color_balance"] is True
+    img_full, tf, _ = qo.read_orthomosaic(full.orthomosaic)
+    b = full.bounds
+    xm = b[0] + round((b[2] - b[0]) / 2 / 0.5) * 0.5
+    left = p.orthomosaic(qo.OrthoOptions(**opts, bounds=(b[0], b[1], xm, b[3])))
+    img_left, tf_left, _ = qo.read_orthomosaic(left.orthomosaic)
+    assert tf_left * (0, 0) == pytest.approx(tf * (0, 0))
+    h, w = img_left.shape[:2]
+    np.testing.assert_array_equal(img_left, img_full[:h, :w])
+
+
 def test_plane_dsm(workspace):
     p = qo.Project.open(workspace)
     r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4, dsm="plane", dsm_z=10.0))

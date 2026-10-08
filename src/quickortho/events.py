@@ -72,6 +72,7 @@ STAGES: dict[str, str] = {
     "mapping": "카메라 위치·자세 추정 (SfM)",
     "georef": "GPS 좌표 정렬",
     "dsm": "간이 DSM 생성",
+    "color": "영상 간 밝기·색 보정",
     "ortho": "정사투영",
     "finalize": "COG 변환·미리보기 생성",
     "refine": "정밀 보정 (번들 조정)",

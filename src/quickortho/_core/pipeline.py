@@ -21,6 +21,7 @@ from rasterio.transform import from_origin
 from .._version import __version__
 from ..errors import InputError, ProcessingError
 from ..options import OrthoOptions
+from .color import estimate_gains
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
 from .geo import Projector
 from .project import Project, to_absolute
@@ -370,12 +371,28 @@ def render_products(
         _write_dsm(dsm, dsm_tmp, crs)
         timings["dsm_s"] = time.perf_counter() - t0
 
+        # 영상 간 밝기·색 보정: 심라인 이음매의 밝기 단차를 없애는 영상별 저주파 이득 맵 (영상 좌표에 묶임)
+        gains, color_stats = None, None
+        if opts.color_balance and len(views) > 1:
+            t0 = time.perf_counter()
+            out.stage("color", "영상 간 밝기·색 보정")
+            # 결과 범위(bounds)가 아니라 촬영 범위 전체로 구한다. 범위·격자 기준점을 바꿔 만든 결과끼리도
+            # 같은 이득을 쓰게 해서, 나눠 만든 결과를 이어 붙이거나 시기별로 비교할 때 밝기가 어긋나지 않게 하기 위해서다
+            vb = np.array([v.bbox for v in views])
+            coverage = (float(vb[:, 0].min()), float(vb[:, 1].min()), float(vb[:, 2].max()), float(vb[:, 3].max()))
+            gains, color_stats = estimate_gains(views, dsm, image_dir, coverage, src_gsd, out)
+            if not gains:  # 이득 맵을 만든 영상이 없음
+                gains, color_stats = None, None
+            timings["color_s"] = time.perf_counter() - t0
+
         t0 = time.perf_counter()
         out.stage("ortho", f"정사 모자이크 생성 (GSD {gsd * 100:.1f} cm)")
         ortho_stats = render_orthomosaic(
             views, dsm, image_dir, tmp, crs, gsd, src_gsd, bounds, out,
-            cache_budget_mb=opts.cache_budget_mb,
+            cache_budget_mb=opts.cache_budget_mb, gains=gains,
         )
+        if color_stats:
+            ortho_stats["color"] = color_stats
         timings["ortho_s"] = time.perf_counter() - t0
 
         t0 = time.perf_counter()
