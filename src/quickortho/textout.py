@@ -9,6 +9,7 @@ import json
 import shutil
 import sys
 import time
+from pathlib import Path
 from typing import Any, TextIO
 
 from ._core.protocol import Emitter
@@ -145,9 +146,29 @@ class TextEmitter(Emitter):
             rows.insert(0, ("보정", f"{r['mode']}, 재투영 {r['before']['rmse_px']:.2f} → {r['after']['rmse_px']:.2f} px"))
             if chk:
                 rows.insert(1, ("검사점", f"{chk['count']}점, 수평 {chk['rmse_xy']:.3f} m, 수직 {chk['rmse_z']:.3f} m"))
+        rows += self._index_rows(d)
         self._kv(rows)
         for w in d.get("warnings", []):
             self._line(f"⚠ {w}")
+
+    @staticmethod
+    def _index_rows(d: dict) -> list[tuple[str, str]]:
+        m = d.get("multispectral")
+        if not m:
+            return []
+        rows = [("지수", ", ".join(m.get("indices") or []) or "없음")]
+        if m.get("indices_skipped"):
+            rows.append(("건너뛴 지수", f"{', '.join(m['indices_skipped'])} (카메라에 필요한 밴드 없음)"))
+        return rows
+
+    def _r_indices(self, d: dict) -> None:
+        rows = self._index_rows(d)
+        idx = (d.get("outputs") or {}).get("indices")
+        if isinstance(idx, dict) and idx:
+            rows.append(("폴더", str(Path(next(iter(idx.values()))).parent)))
+        if "indices_s" in d.get("timings_s", {}):
+            rows.append(("시간", f"{d['timings_s']['indices_s']:.0f}초"))
+        self._kv(rows)
 
     _r_render = _r_ortho
     _r_refine = _r_ortho

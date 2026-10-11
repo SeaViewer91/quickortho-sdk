@@ -87,6 +87,7 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | `ortho <폴더> -o <워크스페이스>` | `Project.create().process()` | `report.json` 내용 |
 | `align <폴더> -o <워크스페이스>` | `Project.create().align()` | 정렬 보고서 |
 | `render <워크스페이스>` | `Project.open().orthomosaic()` | `report.json` 내용 |
+| `indices <워크스페이스> [--indices 목록]` | `Project.open().make_indices()` | `report.json` 내용 (다중분광 지수만 다시 만듦, 0.4.1부터) |
 | `project-info <워크스페이스>` | `Project.info()` | 프로젝트 정보. 정렬 전 폴더면 오류 없이 `{"exists": false, "epsg_presets": [...]}` |
 | `tiepoints <워크스페이스>` | `Project.tiepoint_stats()` | 오차 통계 |
 | `predict <워크스페이스> --spec <JSON>` | `Project.predict()` | 예측 결과 (정사 모자이크 필요) |
@@ -125,6 +126,11 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | `--no-color-balance` | 끔 | ortho, render | 영상 간 밝기·색 보정 끄기 (기본은 보정함) |
 | `--radiometry` | auto | ortho, render | (다중분광) 반사율 환산 방식: `auto`, `dls+panel`, `dls`, `panel`, `radiance` |
 | `--no-ms-normalize` | 끔 | ortho, render | (다중분광) 캡처 간 반사율 블록 조정 끄기 |
+| `--indices` | NDVI,NDRE,GNDVI | ortho, render | (다중분광) 만들 지수, 쉼표로 구분 (대소문자 무관). `none`이면 만들지 않음. RGB 영상에는 쓰지 않음 |
+
+`indices`: `--indices NDVI,NDWI`로 고른 지수만 다시 만들고 고르지 않은 지수 파일은 지움. `--indices none`이면 지수 파일을 모두 지움.
+`--indices`를 빼면 기본값(NDVI,NDRE,GNDVI). 지수 이름은 [지수 표](concepts.md#식생수분-지수-orthooptionsindices) 참고.
+데스크톱 앱은 `["indices", <워크스페이스>, "--indices", "NDVI,NDRE" | "none"]` 형식(이름은 영문·숫자 16자 이하)으로 부름.
 
 `export`: 카메라 CSV는 `name,x,y,z,omega,phi,kappa`, JSON은 영상별 `K`, `dist`, `R`, `t`, `center`, `opk_deg` 등 전체,
 PLY는 희소 점군(좌표 double, 색 포함). 형식은 [산출물을 변수로 쓰기](outputs.md) 참고.
@@ -158,6 +164,10 @@ quickortho render /data/flight_out --dsm plane --dsm-z 0
 
 # 외부 DEM 사용
 quickortho render /data/flight_out --dsm /data/dem_5m.tif
+
+# 다중분광: 수면 지수까지 만들기, 나중에 지수만 바꾸기 (정렬·정사투영 없음)
+quickortho ortho /data/rededge -o /data/rededge_out --indices ndvi,ndre,ndwi
+quickortho indices /data/rededge_out --indices NDVI,OSAVI,CIre
 
 # 카메라 자세·점군 내보내기, 환경 진단
 quickortho export /data/flight_out --cameras-csv cams.csv --points-ply points.ply
@@ -213,7 +223,7 @@ while (p.StandardOutput.ReadLine() is { } line) {
 ```text
 호출 측                                     serve 프로세스
    │  (프로세스 시작)                              │
-   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.4.0","warmup_s":1.2}
+   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.4.1","warmup_s":1.2}
    │ ───▶ {"job":1,"argv":["ortho","/data/a","-o","/data/a_out"]}
    │ ◀──── {"job":1,"type":"stage",...}
    │ ◀──── {"job":1,"type":"progress",...}

@@ -151,23 +151,36 @@ def read_indices(
     scale: float = 1.0,
     bounds: Optional[Bounds] = None,
 ) -> tuple[np.ndarray, Affine, CRS]:
-    """다중분광 식생지수(``indices.tif``)를 ``(array, transform, crs)``로 읽음.
+    """다중분광 식생·수분 지수를 ``(array, transform, crs)``로 읽음.
 
     Args:
-        target: 워크스페이스 폴더 또는 ``indices.tif`` 경로.
-        index: ``"NDVI"``, ``"NDRE"``, ``"GNDVI"`` 중 하나만 읽으면 ``(H, W)``. 없으면 모든 지수 ``(H, W, 지수)``
-            (순서는 :func:`band_names`). 대소문자 구분 없음.
+        target: 워크스페이스 폴더, 지수 GeoTIFF 경로(``indices/NDVI.tif``), 또는 0.4.0 형식 ``indices.tif``.
+        index: 지수 이름(대소문자 무관)을 주면 ``(H, W)``. 없으면 있는 지수를 모두 ``(H, W, 지수)``로 쌓음
+            (순서는 등록 순서 NDVI, NDRE, GNDVI, NDWI, OSAVI, SAVI, EVI, CIre, CIg 중 있는 것. 이름은 :func:`band_names`가 아니라
+            ``OrthoResult.multispectral.index_names``로 확인).
 
     Raises:
-        ProjectError: 지수 파일이 없음 (``not_rendered``: RGB 결과이거나 NIR·Red 등 필요한 밴드가 없음).
+        ProjectError: 지수 파일이 없음 (``not_rendered``: RGB 결과, 지수를 만들지 않음, 필요한 밴드가 없음).
         InputError: 없는 지수 이름 (``invalid_argument``).
     """
     p = Path(target).expanduser()
     if p.is_dir():
-        p = p / "indices.tif"
+        idx_dir = p / "indices"
+        if idx_dir.is_dir():  # 0.4.1: 지수마다 파일 하나
+            files = {f.stem.upper(): f for f in idx_dir.glob("*.tif") if not f.name.endswith(".tmp.tif")}
+            if not files:
+                raise ProjectError(f"식생지수 파일이 없음: {idx_dir}", "not_rendered")
+            if index is not None:
+                f = files.get(index.upper())
+                if f is None:
+                    raise InputError(f"지수 {index}가 없음 (있는 지수: {', '.join(_index_order(files))})",
+                                     "invalid_argument")
+                return read_raster(f, scale=scale, bounds=bounds)
+            layers = [read_raster(files[k.upper()], scale=scale, bounds=bounds) for k in _index_order(files)]
+            return np.ascontiguousarray(np.stack([a for a, _, _ in layers], axis=-1)), layers[0][1], layers[0][2]
+        p = p / "indices.tif"  # 0.4.0 형식
     if not p.exists():
-        raise ProjectError(f"식생지수 파일이 없음: {p}. 다중분광 결과에서 NIR·Red 등 필요한 밴드가 있을 때만 만듦",
-                           "not_rendered")
+        raise ProjectError(f"식생지수 파일이 없음: {p}. 다중분광 결과에서 지수를 만들었을 때만 있음", "not_rendered")
     arr, tf, crs = read_raster(p, scale=scale, bounds=bounds)
     if arr.ndim == 2:
         arr = arr[..., None]
@@ -177,6 +190,15 @@ def read_indices(
     if index.upper() not in names:
         raise InputError(f"지수 {index}가 없음 (있는 지수: {', '.join(names)})", "invalid_argument")
     return np.ascontiguousarray(arr[..., names.index(index.upper())]), tf, crs
+
+
+def _index_order(files: dict[str, Path]) -> list[str]:
+    """지수 파일 이름을 등록 순서로 (등록되지 않은 이름은 뒤에 알파벳 순)."""
+    from ._core.indices import INDEX_DEFS
+
+    known = [k for k in INDEX_DEFS if k.upper() in files]
+    rest = sorted(n for n in files if n not in {k.upper() for k in known})
+    return known + rest
 
 
 def read_dsm(

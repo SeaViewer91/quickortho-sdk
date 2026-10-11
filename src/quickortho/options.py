@@ -68,6 +68,9 @@ class OrthoOptions:
             ``"radiance"``(반사율로 바꾸지 않고 방사휘도 W/m²/sr/nm). RGB 영상에는 영향 없음.
         ms_normalize: (정사, 다중분광) 캡처 간 반사율 블록 조정. 같은 지점을 본 캡처끼리 반사율이 같아지도록
             캡처·밴드별 이득을 구함. 전체 반사율 수준(평균 이득 1)은 바꾸지 않음. ``radiance``에서는 하지 않음.
+        indices: (정사, 다중분광) 만들 식생·수분 지수 이름 목록 (대소문자 무관). ``None``이면 기본값
+            ``["NDVI", "NDRE", "GNDVI"]``, ``[]``이면 만들지 않음. 쓸 수 있는 이름은 :data:`quickortho.indices.INDEX_DEFS`
+            (NDVI, NDRE, GNDVI, NDWI, OSAVI, SAVI, EVI, CIre, CIg). 카메라 밴드로 계산할 수 없는 지수는 건너뛰고 보고서에 남김.
     """
 
     gsd_m: float | None = None
@@ -84,6 +87,7 @@ class OrthoOptions:
     color_balance: bool = True
     radiometry: str = "auto"
     ms_normalize: bool = True
+    indices: Optional[list[str]] = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -97,6 +101,7 @@ class OrthoOptions:
             "bounds": list(self.bounds) if self.bounds else None, "grid_origin": list(self.grid_origin),
             "dsm": str(self.dsm), "dsm_z": self.dsm_z, "dsm_vertical_align": self.dsm_vertical_align,
             "color_balance": self.color_balance, "radiometry": self.radiometry, "ms_normalize": self.ms_normalize,
+            "indices": list(self.indices) if self.indices is not None else None,
         }
 
     @classmethod

@@ -44,6 +44,7 @@ scan → features → matching → mapping → georef → dsm → color → orth
 - 다중분광은 `scan → scan → features → matching → mapping → georef → dsm → bands → ortho → finalize`
   (두 번째 `scan`은 기준 밴드 8비트 영상 준비, `color` 대신 `bands`). `refine()`도 `color` 대신 `bands`가 나옴
 - `preview()`는 `scan → footprints → quicklook`(quicklook은 `quicklook=True`일 때만)
+- (다중분광) `make_indices()`는 `finalize` 하나. 중단·실패하면 이전 지수 파일이 그대로 남음 (0.4.1부터)
 
 ### 전체 진행률 계산
 

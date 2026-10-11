@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from ._core import marking
-from ._core.pipeline import run_align, run_render
+from ._core.pipeline import make_indices, run_align, run_render
 from ._core.preview import run_preview
 from ._core.project import Project as _Store
 from ._core.refine import run_refine
@@ -62,6 +62,18 @@ def _check_options(opts: OrthoOptions) -> OrthoOptions:
         bad("cache_budget_mb는 0보다 커야 함 (None이면 자동)")
     if opts.radiometry not in RADIOMETRY_MODES:
         bad(f"radiometry는 {', '.join(RADIOMETRY_MODES)} 중 하나여야 함: {opts.radiometry}")
+    if opts.indices is not None:
+        # 지수 이름은 오래 걸리는 처리 전에 검사하고 정리해 둠 (대소문자·중복·순서)
+        from dataclasses import replace
+
+        from ._core.indices import normalize_selection
+
+        if isinstance(opts.indices, str):
+            bad("indices는 지수 이름 목록이어야 함 (예: [\"NDVI\", \"NDRE\"])")
+        try:
+            opts = replace(opts, indices=normalize_selection(list(opts.indices)))
+        except ValueError as e:
+            bad(str(e))
     if opts.epsg is not None:
         from ._core.geo import crs_info
 
@@ -382,7 +394,7 @@ class Project:
 
         SfM을 다시 하지 않으므로 GSD만 바꿔 다시 만들 때 빠름. ``options``에서는 ``gsd_m``, ``gsd_scale``,
         ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``, ``color_balance``,
-        ``radiometry``, ``ms_normalize``를 씀.
+        ``radiometry``, ``ms_normalize``, ``indices``를 씀.
         여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
 
         Raises:
@@ -403,6 +415,24 @@ class Project:
         out = _start(on_event, cancel)
         _, rec, epsg = run_align(self.images, self.workspace, opts, out)
         report = run_render(self.workspace, opts, out, rec_abs=rec, epsg=epsg)
+        return OrthoResult.from_report(report, self.workspace)
+
+    def make_indices(self, indices: Iterable[str] | None = None, *, on_event: EventCallback | None = None,
+                     cancel: CancelToken | None = None) -> OrthoResult:
+        """(다중분광) 정사 모자이크는 그대로 두고 식생·수분 지수만 다시 만듦 (정렬·정사투영 없음, 수십 초).
+
+        ``indices``: 만들 지수 이름 (대소문자 무관). ``None``이면 기본값(NDVI·NDRE·GNDVI), ``[]``이면 지수 파일을 모두 지움.
+        고르지 않은 지수의 이전 파일은 지움. 고른 지수는 워크스페이스에 저장되어 :meth:`refine`·:meth:`reset_refinement`의
+        재생성에도 쓰임. :meth:`orthomosaic`은 넘긴 ``OrthoOptions.indices``를 씀 (저장값이 아님).
+
+        Raises:
+            ProjectError: 정사 모자이크가 없음(``not_rendered``), 다중분광 결과가 아님(``not_multispectral``).
+            InputError: 모르는 지수 이름(``invalid_argument``).
+        """
+        if isinstance(indices, str):
+            raise InputError("indices는 지수 이름 목록이어야 함 (예: [\"NDVI\", \"NDRE\"])", "invalid_argument")
+        out = _start(on_event, cancel)
+        report = make_indices(self.workspace, None if indices is None else list(indices), out)
         return OrthoResult.from_report(report, self.workspace)
 
     # ── 정밀 보정 ──

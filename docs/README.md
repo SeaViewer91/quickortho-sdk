@@ -1,6 +1,6 @@
 # QuickOrtho SDK 문서
 
-대상 버전: 0.4.0
+대상 버전: 0.4.1
 
 ## 처음 쓰는 경우
 
@@ -38,10 +38,11 @@
 | `04_thread_cancel.py` | 별도 스레드 처리, 진행률 큐, Ctrl+C 중단 |
 | `05_serve_client.py` | serve 프로세스 클라이언트, 즉시 중단 |
 | `06_batch_folders.py` | 여러 폴더 일괄 처리, 결과 CSV |
-| `07_multispectral.py` | 다중분광 폴더 → 반사율·NDVI, 정합·불일치 확인 |
+| `07_multispectral.py` | 다중분광 폴더 → 반사율·고른 지수, 정합·불일치 확인 |
 
 ## 릴리스 노트
 
+- [v0.4.1](release-notes/v0.4.1.md)
 - [v0.4.0](release-notes/v0.4.0.md)
 - [v0.3.1](release-notes/v0.3.1.md)
 - [v0.3.0](release-notes/v0.3.0.md)

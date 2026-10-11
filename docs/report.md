@@ -8,11 +8,12 @@
 | `dsm.tif` | GeoTIFF, float32, deflate 압축 | 정사투영에 쓴 간이 DSM (m). 해상도는 점군 간격 수준(수 m) |
 | `preview.png` | PNG RGBA | 정사 모자이크를 긴 변 2048px 이하로 줄인 미리보기 |
 | `report.json` | JSON (UTF-8) | 처리 보고서 (2절) |
-| `indices.tif` | (다중분광) GeoTIFF (COG), float32, nodata NaN | 식생지수 NDVI·NDRE·GNDVI 중 계산 가능한 것 (밴드 설명에 이름) |
-| `ndvi.png` | (다중분광) PNG RGBA | NDVI −0.2~0.9를 갈색→초록으로 칠한 미리보기 |
+| `indices/<이름>.tif` | (다중분광) GeoTIFF (COG), float32 단일 밴드, nodata NaN, 예측자 3 | 고른 식생·수분 지수 하나 (밴드 설명에 지수 이름). 0.4.1부터 |
+| `indices/<이름>.png` | (다중분광) PNG RGBA, 긴 변 2048px 이하 | 지수를 미리보기 범위(`index_legend`의 `min`~`max`)로 색 띠에 칠한 것. 자료 없는 곳은 투명 |
 
 - 다중분광이면 `orthomosaic.tif`가 밴드별 float32 반사율(nodata NaN, 예측자 3, 밴드 설명에 밴드 이름)이고,
   `preview.png`는 반사율 R·G·B(Blue가 없으면 NIR·Red·Green 위색)를 1~99백분위로 늘인 것임
+- 0.4.0은 지수를 다중밴드 `indices.tif` 하나와 `ndvi.png`로 만들었음. 0.4.1에서 지수를 다시 만들면(정사 모자이크·`make_indices`) 이 두 파일은 지워짐
 - 좌표계: 보정 전에는 WGS84 UTM(촬영 위치 기준 자동), GCP 보정 후에는 GCP 좌표계
 - `preview.png`를 웹 지도에 겹칠 때는 `report.json`의 `preview_corners_lonlat`(네 모서리 경위도)을 씀.
   MapLibre의 image source 좌표 순서(좌상, 우상, 우하, 좌하)와 같음
@@ -37,7 +38,7 @@ with rasterio.open(result.orthomosaic) as ds:
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.4.0",
+  "engine_version": "0.4.1",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,
@@ -115,7 +116,7 @@ with rasterio.open(result.orthomosaic) as ds:
 | `ortho.color` | (보정 시) `{"cell_m": 보정 격자 셀 크기(m), "grid": [64, 48] 영상별 이득 맵 크기, "images": 이득 맵을 만든 영상 수, "gain_p5", "gain_p95": 이득(세 채널 평균)의 5·95 백분위}`. 1에서 멀수록 영상 간 밝기 차이가 컸다는 뜻임. 이득 맵을 만든 영상이 없으면 `color` 항목 없이 `color_balance`가 `false`임 |
 | `outputs.*` | 결과 파일 절대 경로 |
 | `preview_corners_lonlat` | 결과 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
-| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합 |
+| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합. `make_indices()`로 지수만 다시 만들면 `indices_s`가 추가됨 (`total_s`에 넣지 않음) |
 | `peak_memory_mb` | 정렬·마지막 정사 모자이크 중 최대 메모리(RSS, MB) |
 | `warnings` | 경고 (정렬 경고 + 보정 경고) |
 | `refine` | (보정 후) 보정 결과. 아래 표 |
@@ -125,7 +126,8 @@ with rasterio.open(result.orthomosaic) as ds:
 
 ### `multispectral` 항목 (다중분광)
 
-다중분광 결과에만 있음 (0.4.0부터). `outputs`에 `indices`, `index_preview`가, `ortho`에 `bands`(밴드 이름)와
+다중분광 결과에만 있음 (0.4.0부터). `outputs`에 `indices`(`{지수 이름: tif 경로}`), `index_previews`(`{지수 이름: png 경로}`)가
+(지수를 만들었을 때만. 0.4.0은 `indices`가 다중밴드 파일 경로 문자열이고 `index_preview`가 있었음), `ortho`에 `bands`(밴드 이름)와
 `reference_gsd_m`(기준 밴드 원본 GSD)가 추가되고, `input.multispectral`에 스캔 요약이 들어감. `ortho.source_gsd_m`은 출력 밴드의 원본 GSD임.
 
 | 필드 | 내용 |
@@ -134,7 +136,9 @@ with rasterio.open(result.orthomosaic) as ds:
 | `bands` | `[{"name", "wavelength_nm"}]` 출력 밴드 (정사 모자이크 밴드 순서) |
 | `reference_band` | 정렬에 쓴 기준 밴드 |
 | `values` | `reflectance` 또는 `radiance` |
-| `indices` | 만든 식생지수 이름 |
+| `indices` | 만든 지수 이름 (등록 순서) |
+| `index_legend` | 지수별 `{"label", "min", "max", "colors"}`. `min`~`max`는 미리보기 PNG의 색 범위, `colors`는 색 띠의 양끝·가운데 hex 3개 (범례 표시용). 0.4.1부터 |
+| `indices_skipped` | 골랐지만 카메라에 필요한 밴드가 없어 만들지 못한 지수. 0.4.1부터 |
 | `preview` | `true_color`, `false_color`, `gray` (미리보기 색 구성) |
 | `radiometry.mode` | 실제 쓴 반사율 환산 방식 |
 | `radiometry.irradiance_cv` | (DLS) 밴드별 비행 중 입사광 변동계수 |
@@ -212,6 +216,7 @@ with rasterio.open(result.orthomosaic) as ds:
 |---|---|
 | `corners_lonlat` | 두 PNG의 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
 | `cell_m` | 중복도 격자 크기(m) = PNG 한 화소 크기 |
+| `multispectral` | (다중분광 폴더) 스캔 요약(`model`, `bands`, `reference_band` 등)과 `index_catalog`: 지수마다 `{"name", "label", "bands", "available", "default"}`. 같은 목록이 `indices` 키에도 있음 (데스크톱 앱 호환). RGB 폴더면 `null`. 0.4.1부터 |
 | `bounds` | 격자 범위 `[xmin, ymin, xmax, ymax]` (`epsg` 좌표계). `PreviewResult.transform`을 만드는 데 씀 |
 | `coverage.survey_area_m2` | 조사 영역 면적 (촬영 범위를 합치고 작은 틈을 메운 영역) |
 | `coverage.gap_area_m2` | 누락 면적 |

@@ -46,6 +46,7 @@ from .options import OrthoOptions, PreviewOptions, SfmOptions
 from .project import Project, preview, process, scan
 from .results import AlignResult, MultispectralInfo, OrthoResult, PreviewResult, RefineResult, ScanResult
 from . import multispectral  # noqa: E402  (qo.multispectral: 방사보정만 쓰는 경우)
+from . import indices  # noqa: E402  (qo.indices: 식생지수 목록·직접 계산)
 
 __all__ = [
     "__version__",
@@ -77,6 +78,7 @@ __all__ = [
     "MultispectralInfo",
     # 다중분광 (모듈)
     "multispectral",
+    "indices",
     # 진행·중단
     "Event",
     "EventCallback",

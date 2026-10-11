@@ -29,10 +29,10 @@ from .ms_ortho import (
     normalize_captures,
     refine_rig,
     render_ms_orthomosaic,
-    write_index_preview,
-    write_indices,
     write_rgb_preview,
 )
+from .indices import legend as index_legend
+from .indices import build_indices, normalize_selection, write_indices
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
 from .geo import Projector
 from .project import Project, to_absolute
@@ -178,6 +178,7 @@ def run_align(
 
     for name in PRODUCT_FILES + ("report.json",):
         (out_dir / name).unlink(missing_ok=True)
+    _remove_indices(out_dir)
     timings["total_s"] = time.perf_counter() - t_start
     align = {
         "report_version": REPORT_VERSION,
@@ -291,6 +292,17 @@ def saved_render_options(meta: dict) -> tuple[OrthoOptions, str | None]:
                 f"{', '.join(changed)}")
         if gsd_changed:
             note += ". 이전 해상도로 만들려면 다른 옵션은 그대로 두고 gsd_scale=2로 orthomosaic()을 다시 실행함"
+    # 저장된 지수 선택은 긴 처리(번들 조정·정사투영) 끝에 실패하지 않도록 여기서 검사한다. 잘못된 값이면 기본값으로
+    idx = render.get("indices")
+    if idx is not None:
+        try:
+            if isinstance(idx, str):
+                raise ValueError(idx)
+            render["indices"] = normalize_selection(list(idx))
+        except (ValueError, TypeError):
+            render["indices"] = None
+            bad = f"저장된 지수 선택({idx!r})을 해석할 수 없어 기본값(NDVI·NDRE·GNDVI)으로 만듦"
+            note = f"{note}. {bad}" if note else bad
     return OrthoOptions.from_render_dict(render), note
 
 
@@ -522,10 +534,9 @@ def _render_ms(views, sources, ds, factors, radiometry, rec, dsm, dsm_info, dsm_
     dsm_tmp = out_dir / "dsm.tmp.tif"
     tmp = out_dir / "orthomosaic.tmp.tif"
     cog_tmp = out_dir / "orthomosaic.cog.tmp.tif"
-    itmp = out_dir / "indices.tmp.tif"
-    icog_tmp = out_dir / "indices.cog.tmp.tif"
     final = out_dir / "orthomosaic.tif"
     names = ds.band_names()
+    staged = None
     try:
         _write_dsm(dsm, dsm_tmp, crs)
         timings["dsm_s"] = time.perf_counter() - t0
@@ -566,26 +577,27 @@ def _render_ms(views, sources, ds, factors, radiometry, rec, dsm, dsm_info, dsm_
         t0 = time.perf_counter()
         out.stage("finalize", "COG 변환·식생지수·미리보기 생성")
         finalize_cog(tmp, cog_tmp)
-        index_names = write_indices(cog_tmp, itmp, names)
-        if index_names:
-            finalize_cog(itmp, icog_tmp)
+        # 지수는 새 정사 모자이크(교체 전 임시 파일)에서 indices.new에 만들어 두고, 정사 모자이크와 함께 바꾼다
+        staged = build_indices(cog_tmp, out_dir, names, normalize_selection(opts.indices), finalize_cog)
         out.progress("finalize", 1, 1)  # 중단 확인 지점 (결과물 교체 전)
         os.replace(cog_tmp, final)
         os.replace(dsm_tmp, out_dir / "dsm.tif")
-        if index_names:
-            os.replace(icog_tmp, out_dir / "indices.tif")
-        else:
-            for f in (out_dir / "indices.tif", out_dir / "ndvi.png"):
-                f.unlink(missing_ok=True)
+        try:
+            staged.commit()
+        except BaseException:
+            _remove_indices(out_dir)  # 새 정사 모자이크와 맞지 않는 이전 지수를 남기지 않음
+            raise
     finally:
-        for f in (dsm_tmp, tmp, cog_tmp, itmp, icog_tmp):
+        for f in (dsm_tmp, tmp, cog_tmp):
             f.unlink(missing_ok=True)
+        if staged is not None:
+            staged.discard()
+    tifs, pngs, skipped = staged.tifs, staged.pngs, staged.skipped
     preview = write_rgb_preview(final, out_dir / "preview.png", names)
     outputs = {"orthomosaic": str(final), "dsm": str(out_dir / "dsm.tif"), "preview": str(out_dir / "preview.png")}
-    if index_names:
-        write_index_preview(out_dir / "indices.tif", out_dir / "ndvi.png", band=1)
-        outputs["indices"] = str(out_dir / "indices.tif")
-        outputs["index_preview"] = str(out_dir / "ndvi.png")
+    if tifs:
+        outputs["indices"] = tifs
+        outputs["index_previews"] = pngs
     corners = _corners_lonlat(final)
     timings["finalize_s"] = time.perf_counter() - t0
     any_cap = next(iter(ds.captures.values()))
@@ -611,12 +623,67 @@ def _render_ms(views, sources, ds, factors, radiometry, rec, dsm, dsm_info, dsm_
             "reference_band": any_cap[ds.ref_index].band,
             "values": "radiance" if radiometry["mode"] == "radiance" else "reflectance",
             "radiometry": radiometry,
-            "indices": index_names,
+            "indices": list(tifs),
+            "index_legend": index_legend(list(tifs)),
+            "indices_skipped": skipped,
             **preview,
         },
         "outputs": outputs,
         "preview_corners_lonlat": corners,
     }
+
+
+def _remove_indices(out_dir: Path) -> None:
+    """지수 산출물(0.4.1 indices/ 폴더, 0.4.0 indices.tif·ndvi.png)을 지운다."""
+    for d in ("indices", "indices.new", "indices.old"):
+        shutil.rmtree(out_dir / d, ignore_errors=True)
+    for f in ("indices.tif", "ndvi.png"):
+        (out_dir / f).unlink(missing_ok=True)
+
+
+def make_indices(out_dir: Path, selected: list[str] | None, out: Emitter) -> dict:
+    """이미 만든 다중분광 정사 모자이크에서 지수만 다시 만든다 (정렬·정사투영 생략).
+
+    report.json의 지수 항목과 저장된 정사 옵션(meta.json의 render.indices)도 갱신한다.
+    selected: None이면 기본 지수(NDVI·NDRE·GNDVI), []이면 지수 파일을 모두 지움.
+    """
+    from ..errors import ProjectError
+
+    out_dir = Path(out_dir)
+    try:
+        chosen = normalize_selection(selected)
+    except ValueError as e:
+        raise InputError(str(e), "invalid_argument") from e
+    report_path = out_dir / "report.json"
+    final = out_dir / "orthomosaic.tif"
+    if not report_path.exists() or not final.exists():
+        raise ProjectError("정사 모자이크 결과가 없음. 먼저 orthomosaic() 또는 process()를 실행해야 함", "not_rendered")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    ms_info = report.get("multispectral")
+    if not ms_info:
+        raise ProjectError("다중분광 결과가 아니라 지수를 만들 수 없음", "not_multispectral")
+    names = [b["name"] for b in ms_info["bands"]]
+    out.stage("finalize", f"지수 생성 ({', '.join(chosen) or '없음'})")
+    t0 = time.perf_counter()
+    # 마지막 중단 확인 지점은 교체 전 (교체한 뒤 중단되면 파일과 보고서가 어긋남)
+    tifs, pngs, skipped = write_indices(final, out_dir, names, chosen, finalize_cog,
+                                        before_swap=lambda: out.progress("finalize", 1, 1))
+    outputs = {k: v for k, v in report.get("outputs", {}).items() if k not in ("indices", "index_previews", "index_preview")}
+    if tifs:
+        outputs["indices"] = tifs
+        outputs["index_previews"] = pngs
+    report["outputs"] = outputs
+    ms_info.update(indices=list(tifs), index_legend=index_legend(list(tifs)), indices_skipped=skipped)
+    report.setdefault("timings_s", {})["indices_s"] = round(time.perf_counter() - t0, 2)
+    tmp = report_path.with_name("report.json.tmp")
+    tmp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, report_path)
+    proj = Project(out_dir)
+    if proj.exists():
+        meta = proj.meta()
+        proj.update_render({**(meta.get("render") or {}), "indices": chosen},
+                           meta.get("render_engine_version") or __version__)
+    return report
 
 
 def _alt(im: dict) -> float:

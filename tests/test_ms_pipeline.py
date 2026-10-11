@@ -68,7 +68,17 @@ def test_ms_process_end_to_end(ms_processed, ms_scene):
     info = res.multispectral
     assert info is not None and info.bands == ["Green", "Red", "NIR"] and info.reference_band == "Green"
     assert info.values == "reflectance" and info.radiometry == "dls+panel"
-    assert info.index_names == ["NDVI", "GNDVI"] and info.indices.exists() and info.index_preview.exists()
+    # 기본 선택 NDVI·NDRE·GNDVI 중 Red edge가 없어 NDRE는 건너뜀
+    assert info.index_names == ["NDVI", "GNDVI"] and info.indices_skipped == ["NDRE"]
+    assert res.indices == info.indices and res.indices_skipped == ["NDRE"]
+    assert all(p.exists() and p.parent == ws / "indices" for p in info.indices.values())
+    assert sorted(f.name for f in (ws / "indices").iterdir()) == ["GNDVI.png", "GNDVI.tif", "NDVI.png", "NDVI.tif"]
+    assert info.index_preview == ws / "indices" / "NDVI.png" and info.index_previews["GNDVI"].exists()
+    assert rep["multispectral"]["indices"] == ["NDVI", "GNDVI"] and rep["multispectral"]["indices_skipped"] == ["NDRE"]
+    assert set(rep["multispectral"]["index_legend"]) == {"NDVI", "GNDVI"}
+    assert info.index_legend["NDVI"]["min"] == -0.2 and len(info.index_legend["NDVI"]["colors"]) == 3
+    assert set(rep["outputs"]["indices"]) == {"NDVI", "GNDVI"} and set(rep["outputs"]["index_previews"]) == {"NDVI", "GNDVI"}
+    assert not (ws / "indices.tif").exists() and not (ws / "ndvi.png").exists()
     assert max(info.band_alignment_px.values()) < 0.2
     assert all(after < 2.0 for _, after in info.capture_inconsistency_pct.values())
     assert rep["ortho"]["color_balance"] is False and "color" not in stages
@@ -76,7 +86,7 @@ def test_ms_process_end_to_end(ms_processed, ms_scene):
     # 산출물을 변수로: (H, W, 밴드) float32 반사율, 자료 없는 곳은 NaN
     img, tf, crs = res
     assert img.dtype == np.float32 and img.shape[2] == 3 and np.isnan(img).any()
-    assert qo.band_names(ws) == ["Green", "Red", "NIR"] and qo.band_names(info.indices) == ["NDVI", "GNDVI"]
+    assert qo.band_names(ws) == ["Green", "Red", "NIR"] and qo.band_names(info.indices["GNDVI"]) == ["GNDVI"]
     # 반사율 참값과 비교 (DLS가 비행 중 입사광 변화를 따라가고, 패널로 수준을 맞춤)
     e0, n0 = Transformer.from_crs(4326, syn.EPSG, always_xy=True).transform(syn.LON0, syn.LAT0)
     H, W, _ = img.shape
@@ -88,11 +98,17 @@ def test_ms_process_end_to_end(ms_processed, ms_scene):
         m = np.isfinite(v)
         assert abs(np.median(v[m] / t[m]) - 1) < 0.02, b
         assert np.median(np.abs(v[m] - t[m])) < 0.01, b
-    ndvi, tf2, _ = info.read_indices("NDVI")
+    ndvi, tf2, _ = info.read_indices("ndvi")
     assert ndvi.shape == (H, W) and tf2 == tf
-    red, nir = img[..., 1], img[..., 2]
+    green, red, nir = img[..., 0], img[..., 1], img[..., 2]
     with np.errstate(invalid="ignore", divide="ignore"):
         np.testing.assert_allclose(ndvi, (nir - red) / (nir + red), atol=1e-5, equal_nan=True)
+        stack, _, _ = qo.read_indices(ws)  # 있는 지수를 등록 순서로 쌓음
+        np.testing.assert_allclose(stack[..., 1], (nir - green) / (nir + green), atol=1e-5, equal_nan=True)
+    assert stack.shape == (H, W, 2)
+    # 공개 API로 반사율 정사 모자이크에서 바로 계산해도 같음
+    v, _, _ = qo.indices.compute_raster(ws, "NDVI")
+    np.testing.assert_array_equal(v, ndvi)
 
 
 def test_ms_project_reopen_and_photo_coords(ms_processed, ms_scene):
@@ -140,7 +156,7 @@ def test_ms_radiance_mode_and_options(ms_workspace):
 
 def test_ms_cancel_during_bands_keeps_previous_result(ms_workspace):
     p = qo.Project.open(ms_workspace)
-    before = _sha(ms_workspace / "orthomosaic.tif"), _sha(ms_workspace / "indices.tif")
+    before = _sha(ms_workspace / "orthomosaic.tif"), _sha(ms_workspace / "indices" / "NDVI.tif")
     tok = qo.CancelToken()
 
     def on_event(ev: qo.Event) -> None:
@@ -149,7 +165,7 @@ def test_ms_cancel_during_bands_keeps_previous_result(ms_workspace):
 
     with pytest.raises(qo.Cancelled):
         p.orthomosaic(qo.OrthoOptions(gsd_scale=3), on_event=on_event, cancel=tok)
-    assert (_sha(ms_workspace / "orthomosaic.tif"), _sha(ms_workspace / "indices.tif")) == before
+    assert (_sha(ms_workspace / "orthomosaic.tif"), _sha(ms_workspace / "indices" / "NDVI.tif")) == before
     assert not list(ms_workspace.glob("*.tmp.tif"))
 
 
@@ -208,3 +224,171 @@ def test_ms_preview_and_cli(ms_scene, ms_workspace, tmp_path, capsys):
     ev = [json.loads(ln) for ln in capsys.readouterr().out.strip().splitlines()]
     m = ev[-1]["data"]["multispectral"]
     assert m["radiometry"]["mode"] == "dls" and "capture_normalization" not in m["radiometry"]
+
+
+def test_ms_index_selection_saved_and_reused(ms_workspace):
+    """고른 지수만 만들고, 선택은 meta에 저장되어 refine에서 그대로 쓰임."""
+    p = qo.Project.open(ms_workspace)
+    with pytest.raises(qo.InputError) as ei:  # 잘못된 이름은 처리 시작 전에 실패
+        p.orthomosaic(qo.OrthoOptions(indices=["NDVI", "XYZ"]), on_event=lambda e: pytest.fail("처리 시작됨"))
+    assert ei.value.code == "invalid_argument"
+    with pytest.raises(qo.InputError):
+        p.orthomosaic(qo.OrthoOptions(indices="NDVI"))  # 문자열 하나는 받지 않음
+    r = p.orthomosaic(qo.OrthoOptions(gsd_scale=4, indices=["cig", "NDWI", "ndwi", "EVI"]))
+    assert r.multispectral.index_names == ["NDWI", "CIg"] and r.indices_skipped == ["EVI"]
+    assert sorted(f.name for f in (ms_workspace / "indices").iterdir()) == ["CIg.png", "CIg.tif", "NDWI.png", "NDWI.tif"]
+    meta = json.loads((ms_workspace / "project" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["render"]["indices"] == ["NDWI", "EVI", "CIg"]  # 정리된 선택 (계산 못 한 것도 선택으로 남김)
+    assert qo.OrthoOptions.from_render_dict(meta["render"]).indices == ["NDWI", "EVI", "CIg"]
+    p.set_edits(max_reproj_error_px=1.0)
+    rr = p.refine()
+    assert rr.ortho.multispectral.index_names == ["NDWI", "CIg"]
+    # 지수 없음
+    r0 = p.orthomosaic(qo.OrthoOptions(gsd_scale=4, indices=[]))
+    assert r0.indices == {} and r0.indices_skipped == [] and not (ms_workspace / "indices").exists()
+    assert r0.multispectral.index_preview is None
+    with pytest.raises(qo.ProjectError):
+        qo.read_indices(ms_workspace)
+
+
+def test_ms_make_indices_only(ms_workspace):
+    """지수만 다시 만들기: 정사 모자이크는 그대로, 지수·보고서·저장된 선택만 바뀜."""
+    p = qo.Project.open(ms_workspace)
+    ortho_sha = _sha(ms_workspace / "orthomosaic.tif")
+    rep0 = json.loads((ms_workspace / "report.json").read_text(encoding="utf-8"))
+    ndvi0, _, _ = qo.read_indices(ms_workspace, "NDVI")
+    # v0.4.0 형식 파일이 남아 있던 워크스페이스라고 가정
+    (ms_workspace / "indices.tif").write_bytes(b"old")
+    (ms_workspace / "ndvi.png").write_bytes(b"old")
+    events: list[qo.Event] = []
+    r = p.make_indices(["OSAVI", "ndvi"], on_event=events.append)
+    assert [e.stage for e in events if e.type == "stage"] == ["finalize"]
+    assert r.multispectral.index_names == ["NDVI", "OSAVI"] and r.indices_skipped == []
+    assert _sha(ms_workspace / "orthomosaic.tif") == ortho_sha
+    assert sorted(f.name for f in (ms_workspace / "indices").iterdir()) == ["NDVI.png", "NDVI.tif", "OSAVI.png", "OSAVI.tif"]
+    assert not (ms_workspace / "indices.tif").exists() and not (ms_workspace / "ndvi.png").exists()
+    np.testing.assert_array_equal(qo.read_indices(ms_workspace, "NDVI")[0], ndvi0)  # 같은 값
+    rep = json.loads((ms_workspace / "report.json").read_text(encoding="utf-8"))
+    assert rep["multispectral"]["indices"] == ["NDVI", "OSAVI"] and set(rep["outputs"]["indices"]) == {"NDVI", "OSAVI"}
+    assert rep["sfm"] == rep0["sfm"] and rep["outputs"]["orthomosaic"] == rep0["outputs"]["orthomosaic"]
+    assert rep["timings_s"]["indices_s"] >= 0
+    meta = json.loads((ms_workspace / "project" / "meta.json").read_text(encoding="utf-8"))
+    assert meta["render"]["indices"] == ["NDVI", "OSAVI"]
+    assert qo.Project.open(ms_workspace).result().multispectral.index_names == ["NDVI", "OSAVI"]
+    # None이면 기본 선택
+    assert p.make_indices().multispectral.index_names == ["NDVI", "GNDVI"]
+    with pytest.raises(qo.InputError):
+        p.make_indices(["BAD"])
+
+
+def test_ms_make_indices_errors(ms_processed, workspace, tmp_path):
+    with pytest.raises(qo.ProjectError) as e1:  # RGB 결과
+        qo.Project.open(workspace).make_indices()
+    assert e1.value.code == "not_multispectral"
+    rgb = qo.Project.open(workspace).orthomosaic(qo.OrthoOptions(gsd_scale=4, indices=["NDVI"]))  # RGB에서는 무시
+    assert rgb.indices == {} and rgb.multispectral is None and not (workspace / "indices").exists()
+    msws = tmp_path / "msws"  # workspace fixture가 tmp_path/ws를 쓰므로 다른 이름으로 복사
+    shutil.copytree(ms_processed[0], msws)
+    (msws / "report.json").unlink()
+    with pytest.raises(qo.ProjectError) as e2:
+        qo.Project.open(msws).make_indices()
+    assert e2.value.code == "not_rendered"
+
+
+def test_ms_legacy_render_settings_use_default(ms_workspace):
+    """0.4.1 이전에 저장된 render 설정(indices 없음)은 기본 선택으로 다시 만듦."""
+    meta_p = ms_workspace / "project" / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["render"].pop("indices", None)
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+    assert qo.OrthoOptions.from_render_dict(meta["render"]).indices is None
+    p = qo.Project.open(ms_workspace)
+    p.set_edits(max_reproj_error_px=1.0)
+    assert p.refine().ortho.multispectral.index_names == ["NDVI", "GNDVI"]
+
+
+def test_ms_preview_index_catalog(ms_scene, scene, tmp_path):
+    pv = qo.preview(ms_scene.folder, tmp_path / "pv")
+    cat = {c["name"]: c for c in pv.multispectral["index_catalog"]}
+    assert list(cat) == qo.indices.names()
+    assert cat["NDVI"]["available"] and cat["NDWI"]["available"] and not cat["NDRE"]["available"]
+    assert cat["NDRE"]["default"] and cat["NDVI"]["label"] and cat["EVI"]["bands"] == ["nir", "red", "blue"]
+    assert [b["name"] for b in pv.multispectral["bands"]] == ["Green", "Red", "NIR"]
+    assert qo.preview(scene.folder, tmp_path / "pv2").multispectral is None
+
+
+def test_ms_cli_indices(ms_workspace, capsys):
+    assert main(["indices", str(ms_workspace), "--indices", "NDWI,ndvi", "--format", "json"]) == 0
+    ev = [json.loads(ln) for ln in capsys.readouterr().out.strip().splitlines()]
+    assert ev[-1]["type"] == "result" and ev[-1]["data"]["multispectral"]["indices"] == ["NDVI", "NDWI"]
+    assert main(["indices", str(ms_workspace), "--indices", "none", "--format", "json"]) == 0
+    capsys.readouterr()
+    assert not (ms_workspace / "indices").exists()
+    assert main(["render", str(ms_workspace), "--gsd-scale", "4", "--indices", "gndvi", "--format", "json"]) == 0
+    capsys.readouterr()
+    assert sorted(f.name for f in (ms_workspace / "indices").iterdir()) == ["GNDVI.png", "GNDVI.tif"]
+    assert main(["indices", str(ms_workspace), "--indices", "BAD", "--format", "json"]) != 0
+    err = [json.loads(ln) for ln in capsys.readouterr().out.strip().splitlines()]
+    assert err[-1]["type"] == "error" and err[-1]["code"] == "invalid_argument"
+
+
+def test_ms_make_indices_cancel_keeps_consistent(ms_workspace):
+    """지수만 다시 만들다 중단하면 지수 파일·보고서·저장된 선택 모두 이전 그대로."""
+    p = qo.Project.open(ms_workspace)
+    before = sorted(f.name for f in (ms_workspace / "indices").iterdir())
+    rep0 = (ms_workspace / "report.json").read_text(encoding="utf-8")
+    meta0 = json.loads((ms_workspace / "project" / "meta.json").read_text(encoding="utf-8"))["render"]
+    tok = qo.CancelToken()
+
+    def cancel_at_stage(ev: qo.Event) -> None:
+        if ev.type == "stage":
+            tok.cancel()  # 다음 이벤트(교체 직전 progress)에서 Cancelled
+
+    def fail_at_progress(ev: qo.Event) -> None:
+        if ev.type == "progress":
+            raise RuntimeError("콜백 오류")  # 교체 직전 마지막 이벤트에서 난 예외
+
+    for on_event, exc, cancel in ((cancel_at_stage, qo.Cancelled, tok), (fail_at_progress, RuntimeError, None)):
+        with pytest.raises(exc):
+            p.make_indices(["NDWI"], on_event=on_event, cancel=cancel)
+        assert sorted(f.name for f in (ms_workspace / "indices").iterdir()) == before
+        assert (ms_workspace / "report.json").read_text(encoding="utf-8") == rep0
+        assert json.loads((ms_workspace / "project" / "meta.json").read_text(encoding="utf-8"))["render"] == meta0
+        assert not (ms_workspace / "indices.new").exists()
+
+
+def test_ms_refine_bad_saved_selection_falls_back(ms_workspace):
+    """meta에 저장된 지수 선택이 잘못되었으면 긴 처리 끝에 실패하지 않고 기본값으로 만들며 경고함."""
+    meta_p = ms_workspace / "project" / "meta.json"
+    meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    meta["render"]["indices"] = "NDVI,NDWI"  # 목록이 아닌 문자열 (손으로 고친 경우 등)
+    meta_p.write_text(json.dumps(meta), encoding="utf-8")
+    p = qo.Project.open(ms_workspace)
+    p.set_edits(max_reproj_error_px=1.0)
+    rr = p.refine()
+    assert rr.ortho.multispectral.index_names == ["NDVI", "GNDVI"]
+    assert any("지수 선택" in w for w in rr.ortho.warnings)
+
+
+def test_ms_cli_indices_text(ms_workspace, capsys):
+    assert main(["indices", str(ms_workspace), "--indices", "ndvi,evi", "--format", "text"]) == 0
+    txt = capsys.readouterr().out
+    assert "NDVI" in txt and "건너뛴 지수" in txt and "EVI" in txt and "{" not in txt
+
+
+def test_ms_render_index_failure_keeps_previous(ms_workspace, monkeypatch):
+    """정사 모자이크 재생성 중 지수 계산이 실패하면 정사 모자이크·지수·보고서 모두 이전 그대로 (지수는 교체 전에 만듦)."""
+    import quickortho._core.pipeline as pl
+
+    files = [ms_workspace / "orthomosaic.tif", ms_workspace / "dsm.tif", ms_workspace / "report.json",
+             *sorted((ms_workspace / "indices").iterdir())]
+    before = [_sha(f) for f in files]
+
+    def broken(*a, **k):
+        raise OSError("디스크 가득 참")
+
+    monkeypatch.setattr(pl, "build_indices", broken)
+    with pytest.raises(OSError):
+        qo.Project.open(ms_workspace).orthomosaic(qo.OrthoOptions(gsd_scale=4, indices=["NDWI"]))
+    assert [_sha(f) for f in files] == before
+    assert not list(ms_workspace.glob("*.tmp.tif")) and not (ms_workspace / "indices.new").exists()

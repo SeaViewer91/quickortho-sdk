@@ -138,6 +138,10 @@ SDK 예외가 아닌 예외임. `error` 이벤트의 `detail`(스택 트레이�
 | 밴드가 어긋나 물체 가장자리에 색 테두리 | rig 미세 조정이 수렴하지 않음(무늬 없는 수면 위주 등) | `radiometry.band_alignment.residual`의 `shift_px` 확인. 0.3화소를 넘으면 잘 맞지 않은 것이므로 4절 방법으로 보고함 |
 | 반사율이 음수인 화소 | 매우 어두운 곳의 잡음 (자르지 않음) | 평균·지수 계산에는 그대로 쓰고, 표시할 때만 0으로 자름 |
 | 같은 폴더의 JPG를 쓰지 않는다는 경고 | 다중분광 영상이 있으면 다중분광만 처리함 | RGB는 다른 폴더로 나눠 처리 |
+| 고른 지수 파일이 없음 (`indices_skipped`에 있음) | 카메라에 그 지수에 필요한 밴드가 없음 (예: Blue가 없는 카메라의 EVI, Red edge가 없는 카메라의 NDRE) | 오류가 아니라 건너뜀. 미리 `qo.preview()`의 `index_catalog`나 `qo.indices.available(bands)`로 확인 |
+| `invalid_argument` "알 수 없는 지수" | `indices`에 없는 이름 | `qo.indices.names()`의 이름을 씀 (대소문자 무관). 목록에 없는 식은 `qo.indices.compute_raster()`에 `IndexDef`로 계산 |
+| 0.4.0 결과의 `indices.tif`·`ndvi.png`가 없어짐 | 0.4.1부터 지수를 지수별 파일(`indices/<이름>.tif`)로 만들고, 다시 만들 때 이전 형식을 지움 | `indices/` 폴더의 파일을 씀. 여러 지수를 한 배열로는 `qo.read_indices(workspace)` |
+| 지수 색이 한쪽으로 쏠린 미리보기 PNG | 미리보기 색 범위가 지수마다 고정 (`index_legend`의 `min`~`max`) | 범위 밖은 양끝 색. 분석에는 GeoTIFF 값을 씀 |
 
 ## 3. 설치·실행 문제
 

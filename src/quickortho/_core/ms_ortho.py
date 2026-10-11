@@ -461,40 +461,8 @@ def _render_tile(views, sources, dsm, cache, bgsd, x0, y1, gsd, tw, th, temp, nb
 
 # ── 산출물: 지수, 미리보기 ─────────────────────────────────
 
-INDICES = {
-    # 이름: (밴드 a, 밴드 b) → (a − b) / (a + b)
-    "NDVI": ("NIR", "Red"),
-    "NDRE": ("NIR", "Red edge"),
-    "GNDVI": ("NIR", "Green"),
-}
-
-
 def _band_lookup(names: list[str]) -> dict[str, int]:
     return {n.strip().lower(): i for i, n in enumerate(names)}
-
-
-def write_indices(refl_path: Path, out_path: Path, names: list[str]) -> list[str]:
-    """반사율 정사 모자이크에서 식생지수(정규화 차) 다중밴드 GeoTIFF를 만든다. 만든 지수 이름을 반환."""
-    look = _band_lookup(names)
-    todo = [(k, look[a.lower()], look[b.lower()]) for k, (a, b) in INDICES.items()
-            if a.lower() in look and b.lower() in look]
-    if not todo:
-        return []
-    with rasterio.open(refl_path) as src:
-        prof = src.profile.copy()
-        prof.update(count=len(todo), dtype="float32", nodata=float("nan"), predictor=3, compress="deflate")
-        with rasterio.open(out_path, "w", **prof) as dst:
-            for i, (k, _, _) in enumerate(todo, 1):
-                dst.set_band_description(i, k)
-            for _, win in src.block_windows(1):
-                data = src.read(window=win).astype(np.float32)
-                out = np.empty((len(todo), win.height, win.width), np.float32)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    for j, (_, a, b) in enumerate(todo):
-                        s = data[a] + data[b]
-                        out[j] = np.where(np.abs(s) > 1e-6, (data[a] - data[b]) / s, np.nan)
-                dst.write(out, window=win)
-    return [k for k, _, _ in todo]
 
 
 def write_rgb_preview(refl_path: Path, png_path: Path, names: list[str], max_size: int = 2048) -> dict:
@@ -524,22 +492,3 @@ def write_rgb_preview(refl_path: Path, png_path: Path, names: list[str], max_siz
         rgba[valid, 3] = 255
     Image.fromarray(rgba, "RGBA").save(png_path)
     return {"preview": kind}
-
-
-def write_index_preview(index_path: Path, png_path: Path, band: int = 1, max_size: int = 2048) -> None:
-    """지수(NDVI 등)를 -0.2~0.9 범위의 갈색→노랑→초록 색으로 칠한 미리보기."""
-    from PIL import Image
-
-    with rasterio.open(index_path) as ds:
-        s = min(1.0, max_size / max(ds.width, ds.height))
-        w, h = max(1, int(ds.width * s)), max(1, int(ds.height * s))
-        v = ds.read(band, out_shape=(h, w), resampling=rasterio.enums.Resampling.average)
-    valid = np.isfinite(v)
-    t = np.clip((np.nan_to_num(v) + 0.2) / 1.1, 0, 1)
-    stops = np.array([[0.0, 140, 81, 10], [0.35, 216, 179, 101], [0.55, 246, 232, 195],
-                      [0.7, 145, 207, 96], [1.0, 26, 152, 80]])
-    rgba = np.zeros((h, w, 4), np.uint8)
-    for c in range(3):
-        rgba[..., c] = np.interp(t, stops[:, 0], stops[:, c + 1]).astype(np.uint8)
-    rgba[..., 3] = np.where(valid, 255, 0)
-    Image.fromarray(rgba, "RGBA").save(png_path)

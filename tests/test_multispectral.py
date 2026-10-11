@@ -2,6 +2,7 @@
 
 import io
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -16,9 +17,9 @@ from quickortho._core.ms_ortho import (
     refine_rig,
     render_ms_orthomosaic,
     solve_capture_gains,
-    write_indices,
 )
-from quickortho._core.ortho import View, _footprint
+from quickortho._core.indices import available_indices, index_catalog, normalize_selection, write_indices
+from quickortho._core.ortho import View, _footprint, finalize_cog
 from quickortho._core.protocol import Emitter
 from quickortho._core.surface import Dsm
 
@@ -242,7 +243,7 @@ def test_capture_gains_remove_offsets_keep_level():
     assert before > 0.08 and after < 0.02
 
 
-def test_write_indices(tmp_path: Path):
+def _refl(tmp_path: Path) -> Path:
     src = tmp_path / "r.tif"
     data = np.stack([np.full((4, 4), 0.1), np.full((4, 4), 0.05), np.full((4, 4), 0.5)]).astype(np.float32)
     data[:, 0, 0] = np.nan
@@ -250,13 +251,145 @@ def test_write_indices(tmp_path: Path):
             "crs": CRS.from_epsg(32652), "transform": rasterio.transform.from_origin(0, 4, 1, 1)}
     with rasterio.open(src, "w", **prof) as d:
         d.write(data)
-    names = write_indices(src, tmp_path / "i.tif", ["Green", "Red", "NIR"])
-    assert names == ["NDVI", "GNDVI"]
-    with rasterio.open(tmp_path / "i.tif") as d:
+        for i, n in enumerate(["Green", "Red", "NIR"], 1):
+            d.set_band_description(i, n)
+    return src
+
+
+def test_write_selected_indices_only(tmp_path: Path):
+    src = _refl(tmp_path)
+    bands = ["Green", "Red", "NIR"]
+    # v0.4.0 형식 산출물이 남아 있어도 지워짐
+    (tmp_path / "indices.tif").write_bytes(b"old")
+    (tmp_path / "ndvi.png").write_bytes(b"old")
+    tifs, pngs, skipped = write_indices(src, tmp_path, bands, ["NDVI", "NDWI", "NDRE"], finalize_cog)
+    assert list(tifs) == ["NDVI", "NDWI"] and skipped == ["NDRE"]  # Red edge 밴드가 없어 NDRE는 건너뜀
+    assert sorted(p.name for p in (tmp_path / "indices").iterdir()) == ["NDVI.png", "NDVI.tif", "NDWI.png", "NDWI.tif"]
+    assert not (tmp_path / "indices.tif").exists() and not (tmp_path / "ndvi.png").exists()
+    assert Path(pngs["NDWI"]).exists()
+    with rasterio.open(tifs["NDVI"]) as d:
         ndvi = d.read(1)
-        assert d.descriptions == ("NDVI", "GNDVI")
+        assert d.descriptions == ("NDVI",) and d.count == 1 and d.dtypes[0] == "float32" and np.isnan(d.nodata)
     assert ndvi[1, 1] == pytest.approx((0.5 - 0.05) / 0.55)
     assert np.isnan(ndvi[0, 0])
+    # 다시 만들면 고르지 않은 지수 파일은 지워짐
+    tifs, _, _ = write_indices(src, tmp_path, bands, ["GNDVI"], finalize_cog)
+    assert list(tifs) == ["GNDVI"]
+    assert sorted(p.name for p in (tmp_path / "indices").iterdir()) == ["GNDVI.png", "GNDVI.tif"]
+    tifs, _, _ = write_indices(src, tmp_path, bands, [], finalize_cog)
+    assert tifs == {} and not (tmp_path / "indices").exists()
+
+
+def test_write_indices_failure_keeps_previous(tmp_path: Path):
+    """SDK: 새 지수는 indices.new에 만든 뒤 바꾸므로 도중에 실패해도 이전 지수가 남음."""
+    src = _refl(tmp_path)
+    bands = ["Green", "Red", "NIR"]
+    write_indices(src, tmp_path, bands, ["NDVI"], finalize_cog)
+
+    def broken(tmp, dst):
+        raise OSError("디스크 가득 참")
+
+    with pytest.raises(OSError):
+        write_indices(src, tmp_path, bands, ["GNDVI"], broken)
+    assert sorted(p.name for p in (tmp_path / "indices").iterdir()) == ["NDVI.png", "NDVI.tif"]
+    assert not (tmp_path / "indices.new").exists()
+
+
+def test_index_swap_failure_restores_previous(tmp_path: Path, monkeypatch):
+    """바꾸는 도중(새 폴더를 옮기다) 실패하면 이전 지수 폴더를 되돌림 (Windows에서 파일이 잠긴 경우 등)."""
+    import quickortho._core.indices as ix
+
+    src = _refl(tmp_path)
+    bands = ["Green", "Red", "NIR"]
+    write_indices(src, tmp_path, bands, ["NDVI"], finalize_cog)
+    real = os.replace
+
+    def flaky(a, b):
+        if Path(a).name == "indices.new":
+            raise PermissionError("잠김")
+        return real(a, b)
+
+    monkeypatch.setattr(ix.os, "replace", flaky)
+    with pytest.raises(PermissionError):
+        write_indices(src, tmp_path, bands, ["GNDVI"], finalize_cog)
+    monkeypatch.undo()
+    assert sorted(p.name for p in (tmp_path / "indices").iterdir()) == ["NDVI.png", "NDVI.tif"]
+    assert not (tmp_path / "indices.new").exists() and not (tmp_path / "indices.old").exists()
+    # 바꾸기 직전 중단(before_swap 예외)도 이전 지수 유지
+    with pytest.raises(KeyboardInterrupt):
+        write_indices(src, tmp_path, bands, ["GNDVI"], finalize_cog, before_swap=lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    assert sorted(p.name for p in (tmp_path / "indices").iterdir()) == ["NDVI.png", "NDVI.tif"]
+
+
+def test_index_selection_and_catalog():
+    assert normalize_selection(None) == ["NDVI", "NDRE", "GNDVI"]
+    assert normalize_selection(["gndvi", "ndvi", "NDVI"]) == ["NDVI", "GNDVI"]  # 대소문자·중복 정리, 등록 순서
+    assert normalize_selection([]) == []
+    with pytest.raises(ValueError):
+        normalize_selection(["XYZ"])
+    rededge = ["Blue", "Green", "Red", "Red edge", "NIR"]
+    assert set(available_indices(rededge)) == {"NDVI", "NDRE", "GNDVI", "NDWI", "OSAVI", "SAVI", "EVI", "CIre", "CIg"}
+    cat = {c["name"]: c for c in index_catalog(["Green", "Red", "NIR"])}
+    assert cat["NDVI"]["available"] and not cat["EVI"]["available"] and cat["NDRE"]["default"]
+    assert not cat["NDWI"]["default"] and cat["NDWI"]["bands"] == ["green", "nir"]
+
+
+def test_index_formulas():
+    from quickortho import indices as qi
+
+    b = {"Blue": np.float32(0.04), "Green": np.float32(0.08), "Red": np.float32(0.05),
+         "Red edge": np.float32(0.2), "NIR": np.float32(0.5)}
+    g, r, re, n, bl = 0.08, 0.05, 0.2, 0.5, 0.04
+    want = {
+        "NDVI": (n - r) / (n + r), "NDRE": (n - re) / (n + re), "GNDVI": (n - g) / (n + g),
+        "NDWI": (g - n) / (g + n), "OSAVI": (n - r) / (n + r + 0.16), "SAVI": 1.5 * (n - r) / (n + r + 0.5),
+        "EVI": 2.5 * (n - r) / (n + 6 * r - 7.5 * bl + 1), "CIre": n / re - 1, "CIg": n / g - 1,
+    }
+    assert list(want) == qi.names()
+    for k, v in want.items():
+        assert float(qi.compute(k.lower(), b)) == pytest.approx(v, rel=1e-5), k
+    # 분모가 0에 가까우면 NaN (경고 없이)
+    zero = {k: np.zeros(2, np.float32) for k in b}
+    for k in qi.names():
+        assert np.isnan(qi.compute(k, zero)).all() or k in ("SAVI", "OSAVI", "EVI"), k
+    assert np.isnan(qi.compute("EVI", {"NIR": [0.0], "Red": [0.0], "Blue": [1 / 7.5]})).all()
+
+
+def test_public_indices_api(tmp_path: Path):
+    import quickortho as qo
+    from quickortho import indices as qi
+
+    with pytest.raises(qo.InputError) as e:
+        qi.normalize(["NDVI", "BAD"])
+    assert e.value.code == "invalid_argument"
+    with pytest.raises(qo.InputError):
+        qi.normalize("NDVI")  # 문자열 하나는 받지 않음 (글자 단위로 쪼개지지 않게)
+    with pytest.raises(qo.InputError):
+        qi.compute("NDRE", {"NIR": np.ones(2), "Red": np.ones(2)})
+    with pytest.raises(TypeError):
+        qi.INDEX_DEFS["X"] = qi.INDEX_DEFS["NDVI"]  # 읽기 전용
+    assert qi.DEFAULT_INDICES == ("NDVI", "NDRE", "GNDVI")
+    assert qi.legend(["ndwi"])["NDWI"]["colors"][-1] == "#2166ac"
+
+    src = _refl(tmp_path)
+    ndvi, tf, crs = qi.compute_raster(src, "ndvi")
+    assert ndvi.shape == (4, 4) and ndvi.dtype == np.float32 and crs.to_epsg() == 32652
+    assert ndvi[1, 1] == pytest.approx((0.5 - 0.05) / 0.55) and np.isnan(ndvi[0, 0])
+    own = qi.IndexDef("RATIO", "내 지수", ("nir", "red"), lambda nir, red: nir / red, 0, 20)
+    v, _, _ = qi.compute_raster(src, own, scale=0.5)
+    assert v.shape == (2, 2) and np.nanmax(v) == pytest.approx(10.0)
+    with pytest.raises(qo.InputError):
+        qi.compute_raster(src, "NDRE")
+
+
+def test_rgb_preview_from_reflectance(tmp_path: Path):
+    from quickortho._core.ms_ortho import write_rgb_preview
+
+    src = _refl(tmp_path)
+    info = write_rgb_preview(src, tmp_path / "p.png", ["Green", "Red", "NIR"])
+    assert info["preview"] == "false_color"  # Blue가 없으면 NIR·Red·Green 위색
+    im = np.asarray(Image.open(tmp_path / "p.png"))
+    assert im.shape == (4, 4, 4) and im[0, 0, 3] == 0 and im[1, 1, 3] == 255
 
 
 def test_panel_missing_in_some_bands_falls_back_to_dls(tmp_path: Path):

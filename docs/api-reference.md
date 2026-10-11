@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.4.0
+대상 버전: 0.4.1
 
 ## 목차
 
@@ -14,7 +14,7 @@
 8. [예외](#8-예외)
 9. [로깅](#9-로깅)
 10. [API 안정성](#10-api-안정성)
-11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_indices`, `band_names`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `quickortho.multispectral`, `doctor`
+11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_indices`, `band_names`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `quickortho.multispectral`, `quickortho.indices`, `doctor`
 
 ---
 
@@ -182,7 +182,7 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦. SfM을 다시 하지 않으므로 해상도만 바꿀 때 빠름.
 
 - `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`,
-  `dsm_z`, `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`를 씀
+  `dsm_z`, `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`를 씀
 - 여기서 쓴 옵션은 `project/meta.json`에 저장되어, 이후 `refine()`이 정사 모자이크를 다시 만들 때도 같은 옵션을 씀
 - 결과물은 임시 파일에 먼저 쓰고 마지막에 교체하므로, 중단·실패해도 이전 결과물이 유지됨
 - 반환: [`OrthoResult`](#orthoresult)
@@ -194,6 +194,26 @@ project = qo.Project.open("out")
 for scale in (4, 2, 1):  # 1(기본값)이 원본 해상도
     r = project.orthomosaic(qo.OrthoOptions(gsd_scale=scale))
     print(scale, r.gsd_m, r.width, r.height)
+```
+
+#### `make_indices(indices=None, *, on_event=None, cancel=None) -> OrthoResult`
+
+(다중분광) 정사 모자이크는 그대로 두고 식생·수분 지수만 다시 만듦. 정렬·정사투영을 하지 않으므로 수십 초면 끝남. 0.4.1부터.
+
+- `indices`: 지수 이름 목록 (대소문자 무관, [지수 표](concepts.md#식생수분-지수-orthooptionsindices)). `None`이면 기본값
+  NDVI·NDRE·GNDVI, `[]`이면 지수 파일을 모두 지움. 문자열 하나(`"NDVI"`)는 받지 않음
+- 고르지 않은 지수의 이전 파일과 0.4.0 형식(`indices.tif`, `ndvi.png`)은 지움. 새 지수를 다 만든 뒤 바꾸므로 실패·중단하면 이전 지수가 남음
+- `report.json`의 `multispectral` 지수 항목·`outputs`·`timings_s.indices_s`와 저장된 선택(`meta.json`의 `render.indices`)을 갱신함.
+  저장된 선택은 이후 `refine()`·`reset_refinement()`의 재생성에 쓰임
+- 진행 이벤트는 `finalize` 단계 하나
+- 반환: 갱신된 [`OrthoResult`](#orthoresult)
+- 예외: `ProjectError`(`not_rendered`: 정사 모자이크·보고서 없음, `not_multispectral`: RGB 결과), `InputError`(`invalid_argument`: 모르는 지수 이름), `Cancelled`
+
+```python
+p = qo.Project.open("out/")
+r = p.make_indices(["NDVI", "NDWI", "EVI"])
+print(r.indices)           # {'NDVI': PosixPath('out/indices/NDVI.tif'), 'NDWI': ...}
+print(r.indices_skipped)   # Blue가 없는 카메라면 ['EVI']
 ```
 
 #### `process(options=None, *, on_event=None, cancel=None) -> OrthoResult`
@@ -345,11 +365,12 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `color_balance` | `True` | orthomosaic | 영상 간 밝기·색 차이 보정 (심라인 이음매의 밝기 단차 제거, [원리](concepts.md#밝기색-보정)). 0.3.1부터. 다중분광에는 쓰지 않음 |
 | `radiometry` | `"auto"` | orthomosaic | (다중분광) 반사율 환산 방식: `"auto"`, `"dls+panel"`, `"dls"`, `"panel"`, `"radiance"` ([설명](concepts.md#반사율-환산-방식-orthooptionsradiometry)). 0.4.0부터 |
 | `ms_normalize` | `True` | orthomosaic | (다중분광) 캡처 간 반사율 블록 조정. 전체 반사율 수준은 유지. 0.4.0부터 |
+| `indices` | `None` | orthomosaic | (다중분광) 만들 지수 이름 목록 (대소문자 무관). `None`이면 NDVI·NDRE·GNDVI, `[]`이면 만들지 않음 ([지수 표](concepts.md#식생수분-지수-orthooptionsindices)). 카메라 밴드로 계산할 수 없는 지수는 건너뜀. RGB에는 쓰지 않음. 0.4.1부터 |
 
-- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 모르는 `radiometry`, 경위도 EPSG,
+- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 모르는 `radiometry`·지수 이름, 문자열 하나인 `indices`, 경위도 EPSG,
   잘못된 `bounds`, 없는 DSM 파일 등. 다중분광에서 요청한 `radiometry`에 필요한 DLS·패널이 없을 때도 같음 (정사 단계에서 발생)
 - `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
-  `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
+  `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
   단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
   새 좌표계 값으로 `orthomosaic()`을 다시 실행함
 - 0.3.0 미만이 저장한 옵션 중 당시 기본값과 같은 값(`gsd_m` 없이 `gsd_scale=2`, `cache_budget_mb=600`)은 `refine()`의
@@ -452,6 +473,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `read_gap_mask()` | `ndarray` | 누락 구역 (H, W) bool |
 | `gaps(crs="map")`, `footprints(crs="map")`, `low_overlap(crs="map")` | `list[Polygon]` | shapely 도형. `crs="lonlat"`이면 경위도 |
 | `footprint_names` | `list[str]` | `footprints()`와 같은 순서의 영상 이름 |
+| `multispectral` | `dict \| None` | (다중분광 폴더) `model`, `bands`, `reference_band` 등 스캔 요약과 `index_catalog`: 지수마다 `{"name", "label", "bands", "available", "default"}`. `available`이 이 카메라로 만들 수 있는지임. RGB 폴더면 `None`. 0.4.1부터 |
 
 `quicklook`, `coverage` 속성 이름은 0.1.0 호환을 위해 파일 경로를 돌려줌. 배열은 `read_*()` 또는 풀어서 받음.
 
@@ -490,6 +512,8 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `report` | `dict` | `report.json`과 같음 |
 | `transform`, `crs`, `bounds` | | 정사 모자이크의 지도 좌표 정보 (속성) |
 | `multispectral` | `MultispectralInfo \| None` | 다중분광 결과 정보 (아래 표). RGB면 `None` |
+| `indices` | `dict[str, Path]` | (다중분광) 지수 이름 → GeoTIFF 경로 (속성). RGB거나 지수를 만들지 않았으면 빈 dict. 0.4.1부터 |
+| `indices_skipped` | `list[str]` | (다중분광) 골랐지만 카메라 밴드가 없어 만들지 못한 지수 (속성). 0.4.1부터 |
 | `read(*, scale=1.0, bounds=None, order=None)` | `(image, transform, crs)` | 정사 모자이크 읽기. 다중분광이면 `(H, W, 밴드)` float32 |
 | `read_dsm(*, scale=1.0, bounds=None)` | `(z, transform, crs)` | DSM 읽기 (정사 모자이크와 해상도·범위가 다름) |
 
@@ -505,9 +529,12 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `reference_band` | `str` | 정렬(SfM)에 쓴 기준 밴드 |
 | `values` | `str` | `"reflectance"` 또는 `"radiance"` |
 | `radiometry` | `str` | 실제 쓴 환산 방식 (`"dls+panel"`, `"dls"`, `"panel"`, `"radiance"`) |
-| `indices` | `Path \| None` | 식생지수 GeoTIFF (NIR·Red 등 필요한 밴드가 없으면 `None`) |
-| `index_names` | `list[str]` | 지수 이름 (예: `["NDVI", "NDRE", "GNDVI"]`) |
-| `index_preview` | `Path \| None` | NDVI 컬러 미리보기 PNG |
+| `indices` | `dict[str, Path]` | 지수 이름 → GeoTIFF(`indices/<이름>.tif`, float32 단일 밴드, nodata NaN). 등록 순서. 0.4.1에서 `Path \| None`에서 바뀜 |
+| `index_previews` | `dict[str, Path]` | 지수 이름 → 색 띠 미리보기 PNG |
+| `index_names` | `list[str]` | 만든 지수 이름 (예: `["NDVI", "NDRE", "GNDVI"]`) |
+| `indices_skipped` | `list[str]` | 골랐지만 카메라 밴드가 없어 건너뛴 지수 |
+| `index_legend` | `dict[str, dict]` | 지수별 `{"label", "min", "max", "colors"}` (미리보기 색 범위, 색 띠 양끝·가운데 hex) |
+| `index_preview` | `Path \| None` | NDVI 미리보기 PNG (NDVI가 없으면 첫 지수, 지수가 없으면 `None`) |
 | `band_alignment_px` | `dict[str, float]` | 밴드별 정합 잔차(화소) |
 | `capture_inconsistency_pct` | `dict[str, (float, float)] \| None` | 밴드별 캡처 간 반사율 불일치(%) (보정 전, 후). 블록 조정을 안 했으면 `None` |
 | `report` | `dict` | 보고서의 `multispectral` 항목 전체 |
@@ -519,7 +546,11 @@ refl, transform, crs = r                     # (H, W, 5) float32 반사율, 자�
 ms = r.multispectral
 nir = refl[..., ms.bands.index("NIR")]
 ndvi, _, _ = ms.read_indices("NDVI")         # (H, W)
+print(ms.indices["NDVI"], ms.indices_skipped)
 ```
+
+0.4.0 결과 폴더를 열면 `indices`·`index_previews`는 빈 dict이고 `index_names`·`read_indices()`·`index_preview`는 이전 형식을 읽음.
+`make_indices()`로 다시 만들면 새 형식으로 바뀜.
 
 ### `RefineResult`
 
@@ -668,7 +699,8 @@ QuickOrthoError            (모든 SDK 예외의 기반, Exception 상속)
 | `AlignmentError` | `georef_mismatch` | GPS와 SfM 배치 불일치 | 422 |
 | `ProcessingError` | `dsm_failed` | `sparse`에서 유효한 3D 점 10개 미만, `plane`·외부 DSM에서 3D 점이 없는데 `dsm_z` 없음, 외부 DSM이 촬영 범위를 덮지 않음 | 422 |
 | `ProjectError` | `not_aligned` | 정렬 결과 없음 | 409 |
-| `ProjectError` | `not_rendered` | 정사 모자이크·DSM 없음 (`read_orthomosaic`, `read_dsm`, `predict`, `z` 없는 `image_to_ground`) | 409 |
+| `ProjectError` | `not_rendered` | 정사 모자이크·DSM 없음 (`read_orthomosaic`, `read_dsm`, `predict`, `z` 없는 `image_to_ground`, `make_indices`), 지수 파일 없음 (`read_indices`) | 409 |
+| `ProjectError` | `not_multispectral` | 다중분광 결과가 아님 (`make_indices`). 0.4.1부터 | 409 |
 | `Cancelled` | `cancelled` | 중단됨 | 499 |
 
 SDK 예외가 아닌 예외(`OSError`, `MemoryError` 등)는 그대로 올라감. 디스크 부족·권한 문제 등이 여기에 해당함.
@@ -727,15 +759,15 @@ COLMAP 내부 로그는 오류(ERROR) 수준만 출력되며, 표준 출력이 �
 
 ### `read_indices(target, index=None, *, scale=1.0, bounds=None) -> (array, transform, crs)`
 
-다중분광 식생지수(`indices.tif`)를 읽음. `target`은 워크스페이스 폴더 또는 `indices.tif` 경로.
-`index`(`"NDVI"`, `"NDRE"`, `"GNDVI"`, 대소문자 무관)를 주면 `(H, W)`, 없으면 `(H, W, 지수)`.
-지수는 정규화 차 (a − b)/(a + b): NDVI = (NIR, Red), NDRE = (NIR, Red edge), GNDVI = (NIR, Green). 필요한 밴드가 있는 것만 만듦.
-예외: `ProjectError`(`not_rendered`: 지수 파일 없음), `InputError`(`invalid_argument`: 없는 지수 이름).
+다중분광 식생·수분 지수를 읽음. `target`은 워크스페이스 폴더, 지수 GeoTIFF 경로(`indices/NDVI.tif`), 또는 0.4.0 형식 `indices.tif` 경로.
+`index`(대소문자 무관)를 주면 `(H, W)`, 없으면 만든 지수를 모두 `(H, W, 지수)`로 쌓음 (순서는 [지수 표](concepts.md#식생수분-지수-orthooptionsindices) 순서 중 있는 것,
+이름은 `OrthoResult.multispectral.index_names`).
+예외: `ProjectError`(`not_rendered`: 지수 파일 없음), `InputError`(`invalid_argument`: 만들지 않은 지수 이름).
 
 ### `band_names(target) -> list[str]`
 
 GeoTIFF의 밴드 이름 (밴드 설명). `target`은 워크스페이스 폴더(`orthomosaic.tif`) 또는 GeoTIFF 경로.
-다중분광 정사 모자이크는 `["Blue", "Green", "Red", "Red edge", "NIR"]`처럼, 지수 파일은 `["NDVI", "NDRE", "GNDVI"]`처럼 나옴.
+다중분광 정사 모자이크는 `["Blue", "Green", "Red", "Red edge", "NIR"]`처럼, 지수 파일은 `["NDVI"]`처럼 나옴.
 
 ### `read_dsm(target, *, scale=1.0, bounds=None) -> (z, transform, crs)`
 
@@ -795,6 +827,43 @@ i = ds.out_indices[ds.band_names().index("NIR")]
 b = ds.captures[cap][i]
 nir = ms.radiance(b, ms.read_raw(ds.root / b.file)) * factors[cap][i]   # 원본 영상 좌표의 반사율
 ```
+
+### `quickortho.indices` (모듈)
+
+식생·수분 지수 목록과 계산 함수. 정사 처리는 `OrthoOptions.indices`로 지수를 자동으로 만들므로, 이 모듈은 지수 목록을 보거나
+반사율 GeoTIFF·배열에 직접 계산할 때 씀. 0.4.1에서 새로 공개했으며 1.0 전까지 바뀔 수 있음.
+
+| 이름 | 설명 |
+|---|---|
+| `INDEX_DEFS` | 이름 → `IndexDef` (읽기 전용). 9종, [지수 표](concepts.md#식생수분-지수-orthooptionsindices) 순서 |
+| `DEFAULT_INDICES` | `("NDVI", "NDRE", "GNDVI")` |
+| `IndexDef(name, label, bands, fn, vmin, vmax, palette="vegetation")` | 지수 정의. `bands`는 밴드 이름(대소문자 무관), `fn`은 밴드 배열을 `bands` 순서로 받는 함수, `vmin`·`vmax`는 미리보기 범위, `palette`는 `"vegetation"` 또는 `"water"` |
+| `names() -> list[str]` | 등록된 지수 이름 |
+| `get(name) -> IndexDef` | 이름(대소문자 무관)으로 찾기 |
+| `normalize(selected) -> list[str]` | 검사·정리 (대소문자 무시, 중복 제거, 등록 순서). `None`이면 기본값. 모르는 이름은 `InputError`(`invalid_argument`) |
+| `available(band_names) -> list[str]` | 밴드 이름으로 계산할 수 있는 지수 |
+| `catalog(band_names) -> list[dict]` | `{"name", "label", "bands", "available", "default"}` 목록 (`PreviewResult.multispectral["index_catalog"]`와 같음) |
+| `legend(selected) -> dict` | `{이름: {"label", "min", "max", "colors"}}` (보고서 `index_legend`와 같음) |
+| `compute(index, bands) -> ndarray` | 밴드 배열 dict(밴드 이름 대소문자 무관)로 지수 계산. float32, 분모 \|x\| ≤ 1e-6과 NaN 입력은 NaN |
+| `compute_raster(source, index, *, scale=1.0, bounds=None) -> (array, transform, crs)` | 반사율 GeoTIFF(밴드 설명 = 밴드 이름) 또는 워크스페이스에서 필요한 밴드만 읽어 계산 |
+
+`index`는 등록된 이름 또는 직접 만든 `IndexDef`. 필요한 밴드가 없으면 `InputError`(`invalid_argument`).
+
+```python
+import numpy as np
+from quickortho import indices as qi
+
+qi.available(qo.band_names("out/"))          # 이 카메라로 만들 수 있는 지수
+ndwi, tf, crs = qi.compute_raster("out/", "NDWI", scale=0.25)
+
+# 자기 지수식: 등록하지 않고 IndexDef를 바로 넘김
+rdvi = qi.IndexDef("RDVI", "재정규화 식생지수", ("nir", "red"),
+                   lambda nir, red: (nir - red) / np.sqrt(np.maximum(nir + red, 1e-6)), -0.2, 0.8)
+v, tf, crs = qi.compute_raster("out/", rdvi)
+```
+
+사용자 지수를 등록하는 함수는 두지 않음. 고른 지수 이름은 워크스페이스(`meta.json`)에 저장되어 `refine()`·CLI·다른 프로세스에서
+다시 쓰이는데, 실행 중에만 등록한 지수는 그때 찾을 수 없어 재생성이 실패하기 때문임.
 
 ### `doctor(path=".") -> dict`
 

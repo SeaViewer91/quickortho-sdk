@@ -16,7 +16,7 @@ project = qo.Project.open("workspace/")
 cameras, (xyz, rgb) = project.cameras(), project.points()          # 카메라 자세(K·dist·R·t), 희소 점군
 ```
 
-> 최신 릴리스는 0.4.0(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
+> 최신 릴리스는 0.4.1(알파)임. 1.0 전까지는 공개 API가 바뀔 수 있으며, 바뀌면 릴리스 노트에 적음.
 
 ## 주요 기능
 
@@ -26,7 +26,7 @@ cameras, (xyz, rgb) = project.cameras(), project.points()          # 카메라 �
 | 빠른 미리보기 | SfM 없이 수 초 만에 촬영 범위·중복도·누락 구역·간이 모자이크를 만듦 |
 | 정렬 | SIFT 특징점 → GPS 기반 공간 매칭 → 전역 SfM(실패 시 증분 SfM) → GPS 좌표 정렬 |
 | 정사 모자이크 | 희소 점군 기반 간이 DSM → 영상 간 밝기·색 보정 → 심라인 합성 정사투영(원본 해상도) → Cloud Optimized GeoTIFF |
-| 다중분광 | MicaSense RedEdge·Altum 계열 밴드 TIFF → 반사율 정사 모자이크(DLS·패널 보정, 밴드 정합, 캡처 간 반사율 보정)와 NDVI·NDRE·GNDVI |
+| 다중분광 | MicaSense RedEdge·Altum 계열 밴드 TIFF → 반사율 정사 모자이크(DLS·패널 보정, 밴드 정합, 캡처 간 반사율 보정)와 식생·수분 지수 9종(NDVI·NDRE·GNDVI·NDWI 등) 중 고른 것 |
 | 정밀 보정 | GCP(국내 좌표계 포함)·수동 타이포인트·오차 큰 관측 제거 후 번들 조정, 검사점 오차 보고 |
 | 산출물 변수 | 결과를 풀어서 받으면 numpy 배열·`Affine`·`CRS`·카메라(OpenCV 형식 K·dist·R·t, ω·φ·κ)·점군이 나옴 |
 | 사진 ↔ 지도 좌표 | 원본 사진의 탐지 결과를 지도 좌표로, 지도 좌표를 사진 좌표로 변환 |
@@ -57,7 +57,7 @@ pycolmap·rasterio·OpenCV 같은 의존성은 pip가 PyPI에서 OS에 맞게 �
 ```bash
 python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
-pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.4.0/quickortho_sdk-0.4.0-py3-none-any.whl
+pip install https://github.com/SeaViewer91/quickortho-sdk/releases/download/v0.4.1/quickortho_sdk-0.4.1-py3-none-any.whl
 quickortho version                   # 설치 확인
 ```
 

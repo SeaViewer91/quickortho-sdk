@@ -121,6 +121,8 @@ class PreviewResult:
         coverage_stats: 조사 면적, 누락 면적, 저중복 면적, 중복도 중앙값 등.
         warnings: 경고 문장 목록.
         raw: 원본 dict (``preview.json``과 같음).
+        multispectral: 다중분광 폴더이면 스캔 요약에 ``index_catalog``(지수별 ``name``, ``label``, ``bands``,
+            ``available``(이 카메라 밴드로 만들 수 있는지), ``default``)를 더한 dict. RGB 폴더면 ``None``.
     """
 
     output_dir: Path
@@ -133,6 +135,7 @@ class PreviewResult:
     coverage_stats: dict[str, float]
     warnings: list[str]
     raw: dict[str, Any] = field(repr=False)
+    multispectral: Optional[dict[str, Any]] = None
 
     # 0.1.0 호환 이름
     @property
@@ -242,6 +245,7 @@ class PreviewResult:
             coverage_stats=d["coverage"],
             warnings=d.get("warnings", []),
             raw=d,
+            multispectral=d.get("multispectral"),
         )
 
 
@@ -333,12 +337,17 @@ class MultispectralInfo:
         reference_band: 정렬(SfM)에 쓴 기준 밴드 이름.
         values: ``"reflectance"``(반사율, 0~1 부근) 또는 ``"radiance"``(방사휘도 W/m²/sr/nm).
         radiometry: 반사율 환산 방식 (``"dls+panel"``, ``"dls"``, ``"panel"``, ``"radiance"``).
-        indices: 식생지수 GeoTIFF 경로 (NIR·Red 등 필요한 밴드가 없으면 ``None``).
-        index_names: ``indices`` 파일의 지수 이름 (예: ``["NDVI", "NDRE", "GNDVI"]``).
-        index_preview: NDVI 컬러 미리보기 PNG 경로.
+        indices: 지수 이름 → GeoTIFF 경로 (``indices/<이름>.tif``, float32 단일 밴드). 등록 순서.
+        index_previews: 지수 이름 → 색 띠 미리보기 PNG 경로.
+        indices_skipped: 골랐지만 카메라 밴드가 없어 만들지 못한 지수 (예: Blue가 없는 카메라의 EVI).
+        index_legend: 지수별 범례 ``{"label", "min", "max", "colors"}`` (미리보기 색 범위와 색 띠 양끝·가운데 hex).
         band_alignment_px: 밴드별 정합 잔차(화소, rig 미세 조정 후 남은 이동량의 크기).
         capture_inconsistency_pct: 밴드별 캡처 간 반사율 불일치(%) ``(보정 전, 보정 후)``. 블록 조정을 안 했으면 ``None``.
+        workspace: 워크스페이스 경로.
         report: 보고서의 ``multispectral`` 항목 전체.
+
+    0.4.0 결과(지수를 다중밴드 ``indices.tif`` 하나로 만듦)를 열면 ``indices``는 빈 dict이고 ``index_names``에만 이름이 있음.
+    :meth:`read_indices`는 두 형식 모두 읽음.
     """
 
     model: str
@@ -347,25 +356,40 @@ class MultispectralInfo:
     reference_band: str
     values: str
     radiometry: str
-    indices: Optional[Path]
-    index_names: list[str]
-    index_preview: Optional[Path]
+    indices: dict[str, Path]
+    index_previews: dict[str, Path]
+    indices_skipped: list[str]
+    index_legend: dict[str, dict[str, Any]]
     band_alignment_px: dict[str, float]
     capture_inconsistency_pct: Optional[dict[str, tuple[float, float]]]
-    report: dict[str, Any] = field(repr=False)
+    workspace: Optional[Path] = field(default=None, repr=False)
+    report: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    @property
+    def index_names(self) -> list[str]:
+        """만든 지수 이름 목록."""
+        return list(self.report.get("indices", list(self.indices)))
+
+    @property
+    def index_preview(self) -> Optional[Path]:
+        """NDVI 미리보기 PNG (없으면 첫 지수, 지수가 없으면 ``None``). 0.4.0 호환용."""
+        if self.index_previews:
+            return self.index_previews.get("NDVI") or next(iter(self.index_previews.values()))
+        legacy = self.workspace / "ndvi.png" if self.workspace else None
+        return legacy if legacy is not None and legacy.exists() else None
 
     def read_indices(self, index: Optional[str] = None, *, scale: float = 1.0, bounds: Optional[Bounds] = None):
-        """식생지수를 ``(array, transform, crs)``로 읽음. :func:`quickortho.read_indices` 참고."""
+        """지수를 ``(array, transform, crs)``로 읽음. :func:`quickortho.read_indices` 참고."""
         from .geodata import read_indices
 
-        if self.indices is None:
+        if self.workspace is None:
             from .errors import ProjectError
 
-            raise ProjectError("식생지수 파일이 없음 (NIR·Red 등 필요한 밴드가 없음)", "not_rendered")
-        return read_indices(self.indices, index, scale=scale, bounds=bounds)
+            raise ProjectError("워크스페이스를 알 수 없음", "not_rendered")
+        return read_indices(self.workspace, index, scale=scale, bounds=bounds)
 
     @staticmethod
-    def from_report(report: dict[str, Any]) -> Optional["MultispectralInfo"]:
+    def from_report(report: dict[str, Any], workspace: Optional[Path] = None) -> Optional["MultispectralInfo"]:
         m = report.get("multispectral")
         if not m:
             return None
@@ -377,6 +401,7 @@ class MultispectralInfo:
         if norm.get("applied"):
             incons = {b: (v["inconsistency_before_pct"], v["inconsistency_after_pct"])
                       for b, v in norm.get("bands", {}).items()}
+        tifs = o.get("indices") if isinstance(o.get("indices"), dict) else {}  # 0.4.0은 다중밴드 파일 경로 문자열
         return MultispectralInfo(
             model=m.get("model", ""),
             bands=[b["name"] for b in m.get("bands", [])],
@@ -384,11 +409,13 @@ class MultispectralInfo:
             reference_band=m.get("reference_band", ""),
             values=m.get("values", "reflectance"),
             radiometry=rad.get("mode", ""),
-            indices=Path(o["indices"]) if o.get("indices") else None,
-            index_names=list(m.get("indices", [])),
-            index_preview=Path(o["index_preview"]) if o.get("index_preview") else None,
+            indices={k: Path(v) for k, v in tifs.items()},
+            index_previews={k: Path(v) for k, v in (o.get("index_previews") or {}).items()},
+            indices_skipped=list(m.get("indices_skipped", [])),
+            index_legend=dict(m.get("index_legend", {})),
             band_alignment_px={b: float(np.hypot(*v["shift_px"])) for b, v in resid.items()},
             capture_inconsistency_pct=incons,
+            workspace=Path(workspace) if workspace is not None else None,
             report=m,
         )
 
@@ -438,6 +465,16 @@ class OrthoResult:
         yield image
         yield transform
         yield crs
+
+    @property
+    def indices(self) -> dict[str, Path]:
+        """(다중분광) 지수 이름 → GeoTIFF 경로. RGB 결과나 지수를 만들지 않았으면 빈 dict."""
+        return dict(self.multispectral.indices) if self.multispectral else {}
+
+    @property
+    def indices_skipped(self) -> list[str]:
+        """(다중분광) 골랐지만 카메라 밴드가 없어 만들지 못한 지수."""
+        return list(self.multispectral.indices_skipped) if self.multispectral else []
 
     @property
     def total_time_s(self) -> float:
@@ -500,7 +537,7 @@ class OrthoResult:
             refined="refine" in report,
             warnings=list(report.get("warnings", [])),
             report=report,
-            multispectral=MultispectralInfo.from_report(report),
+            multispectral=MultispectralInfo.from_report(report, workspace),
         )
 
 

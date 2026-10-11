@@ -67,7 +67,8 @@ class ProcessingError(QuickOrthoError):
 class ProjectError(QuickOrthoError):
     """워크스페이스 상태가 요청한 작업과 맞지 않음.
 
-    code 값: ``not_aligned`` (정렬 결과가 없음), ``not_rendered`` (정사 모자이크·DSM이 없음)
+    code 값: ``not_aligned`` (정렬 결과가 없음), ``not_rendered`` (정사 모자이크·DSM이 없음),
+    ``not_multispectral`` (다중분광 결과에만 되는 작업, 예: 지수 다시 만들기)
     """
 
     code = "project_error"

@@ -74,6 +74,8 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--radiometry", choices=["auto", "dls+panel", "dls", "panel", "radiance"], default="auto",
                        help="다중분광 반사율 환산 방식 (기본 auto: 패널·DLS 중 있는 것으로 최선)")
         p.add_argument("--no-ms-normalize", action="store_true", help="다중분광 캡처 간 반사율 블록 조정 끄기")
+        p.add_argument("--indices", default=None,
+                       help="다중분광 지수, 쉼표로 구분 (예: NDVI,NDRE). none이면 만들지 않음. 기본 NDVI,NDRE,GNDVI")
 
     def add_epsg(p: argparse.ArgumentParser) -> None:
         p.add_argument("--epsg", type=int, default=None, help="결과 좌표계 EPSG (투영 좌표계, 기본 UTM)")
@@ -94,6 +96,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_render = sub.add_parser("render", help="정렬된 워크스페이스로 정사 모자이크만 다시 생성")
     p_render.add_argument("ortho_dir", type=Path, help="워크스페이스")
     add_render(p_render)
+
+    p_idx = sub.add_parser("indices", help="다중분광 정사 모자이크에서 지수만 다시 생성 (정렬·정사 생략)")
+    p_idx.add_argument("ortho_dir", type=Path, help="워크스페이스")
+    p_idx.add_argument("--indices", default=None,
+                       help="지수, 쉼표로 구분 (예: NDVI,NDRE). none이면 지수 파일을 모두 지움. 기본 NDVI,NDRE,GNDVI")
 
     # ── 정밀 보정 ──
     p_info = sub.add_parser("project-info", help="보정용 프로젝트 정보 (영상 목록, 좌표계, 수정 사항)")
@@ -166,6 +173,7 @@ def _options(args: argparse.Namespace):
         color_balance=not getattr(args, "no_color_balance", False),
         radiometry=getattr(args, "radiometry", "auto"),
         ms_normalize=not getattr(args, "no_ms_normalize", False),
+        indices=_parse_indices(getattr(args, "indices", None)),
     )
 
 
@@ -224,6 +232,9 @@ def _dispatch(args: argparse.Namespace, out: Emitter) -> None:
     elif cmd == "render":
         res = qo.Project.open(args.ortho_dir).orthomosaic(_options(args), on_event=on_event)
         out.result("render", res.report)
+    elif cmd == "indices":
+        res = qo.Project.open(args.ortho_dir).make_indices(_parse_indices(args.indices), on_event=on_event)
+        out.result("indices", res.report)
     elif cmd == "project-info":
         out.result(cmd, marking.project_info(args.ortho_dir))
     elif cmd == "tiepoints":
@@ -340,6 +351,16 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # 호출 측이 항상 error 이벤트를 받도록 함
         _report_error(out, exc)
         return 2 if isinstance(exc, _ArgError) else 1
+
+
+def _parse_indices(value: str | None) -> list[str] | None:
+    """--indices 값: 없으면 None(기본), "none"·빈 문자열이면 [], 아니면 쉼표 목록 (데스크톱 앱과 같은 형식)."""
+    if value is None:
+        return None
+    v = value.strip()
+    if v.lower() in ("", "none"):
+        return []
+    return [x.strip() for x in v.split(",") if x.strip()]
 
 
 def _pop_format(argv: list[str]) -> tuple[str, list[str]]:

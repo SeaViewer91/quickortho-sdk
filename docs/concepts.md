@@ -10,8 +10,9 @@ SDK는 **영상 폴더 하나 = 워크스페이스 폴더 하나** 단위로 처
 ├── orthomosaic.tif        정사 모자이크 (Cloud Optimized GeoTIFF. RGB는 RGBA, 다중분광은 밴드별 float32 반사율)
 ├── dsm.tif                정사투영에 쓴 간이 DSM (float32)
 ├── preview.png            긴 변 2048px 미리보기 (RGBA)
-├── indices.tif            (다중분광) 식생지수 NDVI·NDRE·GNDVI
-├── ndvi.png               (다중분광) NDVI 컬러 미리보기
+├── indices/               (다중분광) 고른 식생·수분 지수 (0.4.1부터. 0.4.0은 indices.tif·ndvi.png)
+│   ├── NDVI.tif           지수마다 float32 단일 밴드 COG, nodata NaN
+│   └── NDVI.png           색 띠 미리보기 (긴 변 최대 2048px)
 ├── report.json            처리 보고서
 ├── preview/               빠른 미리보기 결과 (Project.preview() 실행 시)
 └── project/               정렬 결과·보정 데이터 (SDK가 관리함. 직접 수정하지 않음)
@@ -44,7 +45,8 @@ SDK는 **영상 폴더 하나 = 워크스페이스 폴더 하나** 단위로 처
 | 작업 | 지워지는 것 | 유지되는 것 |
 |---|---|---|
 | `align()` / `process()` | 이전 정렬·보정 결과, 정사 모자이크·DSM·미리보기 PNG·`report.json`, 사진 조각 캐시, 삭제한 점 목록, 마지막 정사 모자이크 옵션 | GCP·수동 타이포인트의 사진 표시, 자동 제거 기준, `preview/` |
-| `orthomosaic()` | 이전 정사 모자이크·DSM·미리보기 PNG (새 결과로 교체) | 정렬·보정 결과 |
+| `orthomosaic()` | 이전 정사 모자이크·DSM·미리보기 PNG (새 결과로 교체). 다중분광은 `indices/`와 0.4.0 형식 `indices.tif`·`ndvi.png`도 새 선택으로 교체 | 정렬·보정 결과 |
+| `make_indices()` (다중분광) | `indices/`의 이전 지수 파일, 0.4.0 형식 `indices.tif`·`ndvi.png` (새 선택으로 교체) | 정사 모자이크·DSM·미리보기 PNG, 정렬·보정 결과 |
 | `refine()` | 이전 보정 결과 | 정렬 결과, 수정 사항 |
 | `reset_refinement()` | 보정 결과 | 정렬 결과, 수정 사항 |
 
@@ -222,7 +224,7 @@ SDK는 같은 기종(제조사+모델) 안에 카메라(초점거리·해상도 
 
 MicaSense RedEdge-MX·RedEdge-P·Altum·Altum-PT의 밴드 TIFF 폴더를 RGB 폴더와 같은 함수로 처리함
 (`qo.process()`, `Project.create(...).process()`). 폴더에 다중분광 영상이 있으면 자동으로 이 경로를 탐.
-결과 `orthomosaic.tif`는 밴드별 **반사율**(float32)이고, 식생지수 `indices.tif`를 함께 만듦.
+결과 `orthomosaic.tif`는 밴드별 **반사율**(float32)이고, 고른 식생·수분 지수를 `indices/<이름>.tif`로 함께 만듦.
 
 ### 영상 인식
 
@@ -263,8 +265,9 @@ scan → scan(기준 밴드 영상 준비) → features → matching → mapping
 8. **정사투영**: 심라인은 기준 밴드 카메라로 화소마다 한 번만 고르고, 모든 밴드를 그 영상에서 각자 카메라로 읽음
    (지수가 서로 다른 촬영의 값으로 계산되지 않게). 모든 밴드가 있는 화소만 유효하고 나머지는 NaN.
    출력 GSD는 출력 밴드의 원본 GSD × `gsd_scale`. 밝기·색 보정(`color`)은 하지 않음 (반사율을 바꾸지 않기 위해)
-9. **산출물**: `orthomosaic.tif`(반사율 float32 COG, 밴드 설명에 밴드 이름), `indices.tif`(NDVI·NDRE·GNDVI 중 계산 가능한 것),
-   `preview.png`(반사율 R·G·B, Blue가 없으면 NIR·Red·Green 위색, 1~99백분위 늘이기), `ndvi.png`(−0.2~0.9 갈색→초록)
+9. **산출물**: `orthomosaic.tif`(반사율 float32 COG, 밴드 설명에 밴드 이름),
+   `preview.png`(반사율 R·G·B, Blue가 없으면 NIR·Red·Green 위색, 1~99백분위 늘이기),
+   `indices/<이름>.tif`·`.png`(고른 지수마다, 아래 "식생·수분 지수" 참고)
 
 ### 반사율 환산 방식 (`OrthoOptions.radiometry`)
 
@@ -280,6 +283,36 @@ scan → scan(기준 밴드 영상 준비) → features → matching → mapping
   (예: MicaSense Altum 공개 예제의 Green) `auto`는 DLS가 있으면 `dls`, 없으면 `radiance`가 되고 보고서에 경고를 남김
   (`radiometry.panel_missing_bands`). 방식을 직접 지정한 경우에는 경고하지 않음
 - 요청한 방식에 필요한 자료(DLS·패널)가 없으면 `InputError`(`invalid_argument`)
+
+### 식생·수분 지수 (`OrthoOptions.indices`)
+
+반사율 정사 모자이크에서 고른 지수만 계산함 (0.4.1부터). 기본값 `None`은 NDVI·NDRE·GNDVI(0.4.0과 같은 결과), `[]`는 만들지 않음.
+이름은 대소문자를 가리지 않고, 중복은 하나로, 순서는 아래 표 순서로 정리함. 모르는 이름은 처리 시작 전에 `InputError`(`invalid_argument`).
+
+| 이름 | 식 | 필요한 밴드 | 미리보기 범위 | 쓰는 곳 |
+|---|---|---|---|---|
+| NDVI | (NIR − Red) / (NIR + Red) | NIR, Red | −0.2 ~ 0.9 | 정규식생지수. 식생 활력 일반 |
+| NDRE | (NIR − RE) / (NIR + RE) | NIR, Red edge | −0.1 ~ 0.6 | 생육 후기·질소 상태 (NDVI가 포화되는 밀식 작물) |
+| GNDVI | (NIR − G) / (NIR + G) | NIR, Green | −0.2 ~ 0.9 | 엽록소 함량 |
+| NDWI | (G − NIR) / (G + NIR) | Green, NIR | −0.6 ~ 0.6 | 수면 구분 (McFeeters). 물이 양수. 파랑 색 띠 |
+| OSAVI | (NIR − Red) / (NIR + Red + 0.16) | NIR, Red | −0.2 ~ 0.8 | 식생이 성긴 곳 (토양 영향 보정) |
+| SAVI | 1.5 (NIR − Red) / (NIR + Red + 0.5) | NIR, Red | −0.2 ~ 0.8 | 토양 보정 (L = 0.5) |
+| EVI | 2.5 (NIR − Red) / (NIR + 6 Red − 7.5 Blue + 1) | NIR, Red, Blue | −0.2 ~ 0.9 | 식생이 빽빽한 곳 (대기·배경 보정) |
+| CIre | NIR / RE − 1 | NIR, Red edge | 0 ~ 4 | 적색경계 엽록소지수 |
+| CIg | NIR / G − 1 | NIR, Green | 0 ~ 8 | 녹색 엽록소지수 |
+
+- 밴드는 정사 모자이크의 밴드 이름(대소문자 무관)으로 찾음. 카메라에 필요한 밴드가 없는 지수(예: Blue가 없는 카메라의 EVI)는
+  오류가 아니라 건너뛰고 보고서 `multispectral.indices_skipped`에 남김. 고를 수 있는 지수는 `qo.preview()` 결과의
+  `multispectral["index_catalog"]`의 `available`로 미리 확인함
+- 분모의 절댓값이 1e-6 이하이거나 입력이 NaN인 화소는 NaN
+- 미리보기 범위는 PNG 색칠에만 쓰고, GeoTIFF에는 계산값을 자르지 않고 저장함
+- 지수를 만들기 전에 `indices/` 폴더와 0.4.0 형식(`indices.tif`, `ndvi.png`)을 지우므로 선택에서 뺀 지수 파일은 남지 않음.
+  SDK는 새 지수를 `indices.new/`에 다 만든 뒤 바꾸므로 도중에 실패·중단하면 이전 지수가 그대로 남음.
+  정사 모자이크 재생성에서는 임시 정사 모자이크에서 지수를 만들어 두고 정사 모자이크와 함께 바꿈
+- 선택은 `project/meta.json`의 render 설정에 저장되어 `refine()`·`reset_refinement()`의 재생성에 그대로 쓰임 (0.4.1 전에 저장된 설정은 기본값)
+- **지수만 다시 만들기**: `Project.make_indices(["NDVI", "NDWI"])` 또는 `quickortho indices <워크스페이스> --indices NDVI,NDWI`.
+  정렬·정사투영 없이 반사율 정사 모자이크에서 지수만 계산함 (Bürgewald 5밴드 3451×3659px 기본 3종 약 11초, 9종 약 31초)
+- 다른 지수식은 등록하지 않고 `qo.indices.IndexDef`로 만들어 `qo.indices.compute_raster()`에 넘김 ([API](api-reference.md#quickorthoindices-모듈))
 
 ### 한계
 

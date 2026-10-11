@@ -484,7 +484,7 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
         if note:
             # 바꾼 기본값만 저장한다 (좌표계 변경으로 적용하지 않은 bounds 등은 저장값을 지우지 않음)
             proj.update_render({**(meta.get("render") or {}), "gsd_scale": opts.gsd_scale,
-                                "cache_budget_mb": opts.cache_budget_mb}, __version__)
+                                "cache_budget_mb": opts.cache_budget_mb, "indices": opts.indices}, __version__)
 
     timings["total_s"] = time.perf_counter() - t_start
     render_t = {k: timings[k] for k in ("dsm_s", "color_s", "bands_s", "ortho_s", "finalize_s") if k in timings}

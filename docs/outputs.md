@@ -297,14 +297,22 @@ nir = refl[..., ms.bands.index("NIR")]
 with np.errstate(invalid="ignore", divide="ignore"):
     ndvi = (nir - red) / (nir + red)             # NaN은 그대로 전파됨
 
-# 미리 만든 식생지수 (NDVI·NDRE·GNDVI 중 계산 가능한 것)
+# 미리 만든 지수 (기본 NDVI·NDRE·GNDVI 중 계산 가능한 것, OrthoOptions(indices=[...])로 고름)
+print(ms.indices)                                # {'NDVI': Path('out/indices/NDVI.tif'), ...}
 ndvi2, _, _ = ms.read_indices("NDVI")            # 또는 qo.read_indices("out/", "NDVI")
 all_idx, _, _ = qo.read_indices("out/")          # (H, W, 지수), 이름은 ms.index_names
+
+# 지수만 바꿔 다시 만들기 (정렬·정사투영 없음)
+r = qo.Project.open("out/").make_indices(["NDVI", "NDWI", "OSAVI"])
+
+# 파일로 만들지 않고 바로 계산 (목록에 없는 지수식도 IndexDef로)
+evi, _, _ = qo.indices.compute_raster("out/", "EVI", scale=0.25)
 ```
 
 - 통계는 NaN을 빼고 냄 (`np.nanmean`, `np.nanpercentile`). rasterio로 직접 읽어도 nodata가 NaN으로 설정되어 있음
 - 반사율은 대략 0~1이지만 매우 어두운 곳은 잡음으로 음수가 될 수 있음 (자르지 않음). 표시할 때만 `np.clip`
 - 구역별 평균(예: 필지 폴리곤): `rasterio.features.geometry_mask`로 마스크를 만들어 `np.nanmean(ndvi[mask])`
 - 밴드 정합 잔차·캡처 간 반사율 불일치는 `ms.band_alignment_px`, `ms.capture_inconsistency_pct`로 확인함
+- 지수 목록·식은 [핵심 개념](concepts.md#식생수분-지수-orthooptionsindices), 계산 함수는 [`quickortho.indices`](api-reference.md#quickorthoindices-모듈) 참고
 - 원본 밴드 영상 한 장의 방사보정만 필요하면 `quickortho.multispectral` 모듈을 씀 ([API 레퍼런스](api-reference.md#quickorthomultispectral-모듈))
 
