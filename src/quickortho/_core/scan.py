@@ -14,6 +14,7 @@ from ..errors import InputError
 from .protocol import Emitter, NullEmitter
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg"}
+MS_SUFFIXES = {".tif", ".tiff"}  # 다중분광 밴드 영상 (MicaSense 등). 다중분광 메타데이터가 있는 TIFF만 받음
 
 # EXIF 태그 번호
 _TAG_MAKE = 271
@@ -60,6 +61,8 @@ class ImageRecord:
     flight_yaw: float | None = None
     rtk_flag: int | None = None
     camera_key: str = ""
+    band: str | None = None  # 다중분광 밴드 이름 (RGB 영상이면 None)
+    capture: str | None = None  # 다중분광 캡처 식별자
     selected: bool = True
     flags: list[str] = field(default_factory=list)
 
@@ -193,9 +196,21 @@ def scan_folder(folder: Path, recursive: bool = False, emitter: Emitter | None =
 
     out = emitter if emitter is not None else NullEmitter()
     pattern = "**/*" if recursive else "*"
-    files = sorted(
-        p for p in folder.glob(pattern) if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES
-    )
+    all_files = sorted(p for p in folder.glob(pattern) if p.is_file())
+    files = [p for p in all_files if p.suffix.lower() in IMAGE_SUFFIXES]
+    tiffs = [p for p in all_files if p.suffix.lower() in MS_SUFFIXES]
+    ms_bands: dict[str, Any] = {}
+    if tiffs:
+        from .multispectral import read_band
+
+        for p in tiffs:
+            try:
+                b = read_band(p, folder)
+            except Exception:  # noqa: BLE001 - 다중분광이 아닌 TIFF·손상 파일은 건너뜀
+                b = None
+            if b is not None:
+                ms_bands[b.file] = b
+        files += [folder / f for f in ms_bands]
     out.stage("scan", f"영상 {len(files)}장 스캔 시작")
 
     records: list[ImageRecord] = []
@@ -210,14 +225,23 @@ def scan_folder(folder: Path, recursive: bool = False, emitter: Emitter | None =
         if i % step == 0 or i == len(files):
             out.progress("scan", i, len(files))
 
-    excluded = select_mapping_cameras(records)
+    ms_summary = None
+    if ms_bands:
+        ms_summary = _mark_multispectral(records, ms_bands, folder)
+    excluded = select_mapping_cameras([r for r in records if r.band is None])
+    ref_band = ms_summary["reference_band"] if ms_summary else None
+    for r in records:
+        # 패널·불완전 캡처의 기준 밴드도 선택되지 않으므로 selected가 아니라 밴드 이름으로 구분한다
+        if r.band is not None and r.band != ref_band:
+            excluded.setdefault(r.camera_key, "다중분광 보조 밴드: 정렬은 기준 밴드로 하고 정사 단계에서 모든 밴드를 씀")
 
     cameras: dict[str, dict[str, Any]] = {}
     for r in records:
         cam = cameras.setdefault(
             r.camera_key,
             {"make": r.make, "model": r.model, "focal_mm": r.focal_mm, "focal_35mm": r.focal_35mm,
-             "width": r.width, "height": r.height, "count": 0, "selected": r.selected},
+             "width": r.width, "height": r.height, "count": 0,
+             "selected": r.selected if r.band is None else r.band == ref_band},
         )
         cam["count"] += 1
 
@@ -234,11 +258,54 @@ def scan_folder(folder: Path, recursive: bool = False, emitter: Emitter | None =
             (r.model or "").upper() in ROLLING_SHUTTER_MODELS for r in selected
         ),
     }
+    if ms_summary:
+        summary["panel_captures"] = ms_summary["panel_captures"]
     return {
         "folder": str(folder),
+        "multispectral": ms_summary,
         "summary": summary,
         "cameras": cameras,
         "excluded_cameras": excluded,
         "failed": failed,
         "images": [asdict(r) for r in records],
+    }
+
+
+def _mark_multispectral(records: list[ImageRecord], bands: dict[str, Any], folder: Path) -> dict[str, Any]:
+    """다중분광 밴드 영상 기록에 밴드·캡처를 채우고, 정렬에 쓸 기준 밴드(비행 캡처)만 선택한다."""
+    import math
+
+    from .multispectral import build_dataset
+
+    ds = build_dataset(list(bands.values()), folder)
+    ref_files = {ds.ref(c).file for c in ds.flight_captures}
+    panel = set(ds.panel_captures)
+    # 지면 높이: 패널 촬영(지상)의 GPS 고도가 있으면 그것을 기준으로 상대고도를 만든다
+    ground = [ds.ref(c).alt for c in panel if ds.ref(c).alt is not None]
+    ground_alt = sorted(ground)[len(ground) // 2] if ground else None
+    for r in records:
+        b = bands.get(r.file)
+        if b is None:
+            continue
+        r.band = b.band
+        r.capture = b.capture
+        r.camera_key = f"{r.make or '?'} {r.model or '?'} | {b.band} | {r.width}x{r.height}"
+        r.selected = r.file in ref_files
+        if b.capture in panel:
+            r.flags.append("panel")
+        diag_mm = math.hypot(b.width / b.fx, b.height / b.fy)  # 초점거리 1 기준 → 화각
+        r.focal_35mm = 43.27 / diag_mm  # 35mm 환산 (대각 43.27mm)
+        if ground_alt is not None and r.abs_alt is not None:
+            r.rel_alt = r.abs_alt - ground_alt
+    sample = ds.captures[next(iter(ds.captures))]
+    return {
+        "model": ds.model,
+        "bands": [
+            {"name": sample[i].band, "wavelength_nm": sample[i].wavelength, "index": i} for i in ds.out_indices
+        ],
+        "reference_band": sample[ds.ref_index].band,
+        "captures": len(ds.flight_captures),
+        "panel_captures": len(ds.panel_captures),
+        "incomplete_captures": len(ds.incomplete),
+        "has_dls": all(b.irradiance for b in bands.values() if not b.is_thermal),
     }

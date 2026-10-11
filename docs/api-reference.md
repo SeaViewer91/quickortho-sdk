@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.3.1
+대상 버전: 0.4.0
 
 ## 목차
 
@@ -8,13 +8,13 @@
 2. [폴더 함수](#2-폴더-함수): `scan`, `preview`, `process`
 3. [Project](#3-project)
 4. [옵션](#4-옵션): `OrthoOptions`, `SfmOptions`, `PreviewOptions`
-5. [결과 객체](#5-결과-객체): `ScanResult`, `PreviewResult`, `AlignResult`, `OrthoResult`, `RefineResult`
+5. [결과 객체](#5-결과-객체): `ScanResult`, `PreviewResult`, `AlignResult`, `OrthoResult`, `MultispectralInfo`, `RefineResult`
 6. [진행 이벤트와 중단](#6-진행-이벤트와-중단): `Event`, `EventCallback`, `CancelToken`, `STAGES`, `print_progress`
 7. [GCP](#7-gcp): `Mark`, `GCP`, `TiePoint`, `load_gcps`, `read_gcp_file`
 8. [예외](#8-예외)
 9. [로깅](#9-로깅)
 10. [API 안정성](#10-api-안정성)
-11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `doctor`
+11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_indices`, `band_names`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `quickortho.multispectral`, `doctor`
 
 ---
 
@@ -168,7 +168,7 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 | 예외 | code | 원인 |
 |---|---|---|
 | `InputError` | `folder_not_found` | 영상 폴더가 없음 |
-| `InputError` | `no_images` | JPG 영상이 없음 |
+| `InputError` | `no_images` | 영상(JPG 또는 다중분광 TIFF)이 없음 |
 | `InputError` | `too_few_images` | 처리 대상 영상이 3장 미만 |
 | `InputError` | `too_few_gps` | GPS가 있는 영상이 3장 미만 |
 | `InputError` | `invalid_argument` | 옵션 값 오류 (경위도 EPSG 등) |
@@ -182,11 +182,11 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦. SfM을 다시 하지 않으므로 해상도만 바꿀 때 빠름.
 
 - `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`,
-  `dsm_z`, `dsm_vertical_align`, `color_balance`를 씀
+  `dsm_z`, `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`를 씀
 - 여기서 쓴 옵션은 `project/meta.json`에 저장되어, 이후 `refine()`이 정사 모자이크를 다시 만들 때도 같은 옵션을 씀
 - 결과물은 임시 파일에 먼저 쓰고 마지막에 교체하므로, 중단·실패해도 이전 결과물이 유지됨
 - 반환: [`OrthoResult`](#orthoresult)
-- 예외: `ProjectError`(`not_aligned`), `InputError`(`image_dir_missing`: 원본 영상 폴더가 없어짐, `invalid_argument`: 옵션 값 오류),
+- 예외: `ProjectError`(`not_aligned`), `InputError`(`image_dir_missing`: 원본 영상 폴더(다중분광은 원본 밴드 폴더)가 없어짐, `invalid_argument`: 옵션 값 오류),
   `ProcessingError`(`dsm_failed`: [원인](#8-예외)), `Cancelled`
 
 ```python
@@ -342,11 +342,14 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `dsm` | `"sparse"` | orthomosaic | 지형면: `"sparse"`(희소 점군 보간), `"plane"`(수평면), 외부 DSM/DEM GeoTIFF 경로 |
 | `dsm_z` | `None` | orthomosaic | `dsm="plane"`의 높이(m, 결과 좌표계 높이 기준). `None`이면 희소 점군 높이 중앙값 |
 | `dsm_vertical_align` | `True` | orthomosaic | 외부 DSM을 희소 점군 높이에 맞춰 중앙값 차이만큼 올리거나 내림 (해발고·타원체고 차이 보정) |
-| `color_balance` | `True` | orthomosaic | 영상 간 밝기·색 차이 보정 (심라인 이음매의 밝기 단차 제거, [원리](concepts.md#밝기색-보정)). 0.3.1부터 |
+| `color_balance` | `True` | orthomosaic | 영상 간 밝기·색 차이 보정 (심라인 이음매의 밝기 단차 제거, [원리](concepts.md#밝기색-보정)). 0.3.1부터. 다중분광에는 쓰지 않음 |
+| `radiometry` | `"auto"` | orthomosaic | (다중분광) 반사율 환산 방식: `"auto"`, `"dls+panel"`, `"dls"`, `"panel"`, `"radiance"` ([설명](concepts.md#반사율-환산-방식-orthooptionsradiometry)). 0.4.0부터 |
+| `ms_normalize` | `True` | orthomosaic | (다중분광) 캡처 간 반사율 블록 조정. 전체 반사율 수준은 유지. 0.4.0부터 |
 
-- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 경위도 EPSG, 잘못된 `bounds`, 없는 DSM 파일 등
+- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 모르는 `radiometry`, 경위도 EPSG,
+  잘못된 `bounds`, 없는 DSM 파일 등. 다중분광에서 요청한 `radiometry`에 필요한 DLS·패널이 없을 때도 같음 (정사 단계에서 발생)
 - `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
-  `dsm_vertical_align`, `color_balance`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
+  `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
   단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
   새 좌표계 값으로 `orthomosaic()`을 다시 실행함
 - 0.3.0 미만이 저장한 옵션 중 당시 기본값과 같은 값(`gsd_m` 없이 `gsd_scale=2`, `cache_budget_mb=600`)은 `refine()`의
@@ -406,6 +409,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `failed` | `list[dict]` | 읽기 실패 `[{"file", "error"}]` |
 | `selected_images` | `list[dict]` | 처리 대상 영상만 (속성) |
 | `num_with_gps` | `int` | 처리 대상 중 GPS 있는 영상 수 (속성) |
+| `multispectral` | `dict \| None` | 다중분광 폴더이면 요약: `model`, `bands`(`name`, `wavelength_nm`, `index`), `reference_band`, `captures`, `panel_captures`, `incomplete_captures`, `has_dls`. 이때 `images`에는 밴드 영상이 모두 들어가며(`band`, `capture` 키) 기준 밴드만 `selected` |
 | `positions(selected_only=True)` | `ndarray` | 촬영 위치 (N, 3) [경도, 위도, 고도], GPS 없는 행은 NaN (메서드) |
 | `raw` | `dict` | 원본 |
 
@@ -471,7 +475,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 
 | 속성 | 형식 | 설명 |
 |---|---|---|
-| `orthomosaic` | `Path` | 정사 모자이크 GeoTIFF (COG, RGBA) |
+| `orthomosaic` | `Path` | 정사 모자이크 GeoTIFF (COG). RGB는 RGBA uint8, 다중분광은 밴드별 float32 반사율 (nodata NaN) |
 | `dsm` | `Path` | 간이 DSM GeoTIFF (float32) |
 | `preview` | `Path` | 미리보기 PNG |
 | `report_path` | `Path` | `report.json` |
@@ -485,8 +489,37 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `peak_memory_mb` | `float` | 최대 메모리(MB) (속성) |
 | `report` | `dict` | `report.json`과 같음 |
 | `transform`, `crs`, `bounds` | | 정사 모자이크의 지도 좌표 정보 (속성) |
-| `read(*, scale=1.0, bounds=None, order="RGBA")` | `(image, transform, crs)` | 정사 모자이크 읽기 |
+| `multispectral` | `MultispectralInfo \| None` | 다중분광 결과 정보 (아래 표). RGB면 `None` |
+| `read(*, scale=1.0, bounds=None, order=None)` | `(image, transform, crs)` | 정사 모자이크 읽기. 다중분광이면 `(H, W, 밴드)` float32 |
 | `read_dsm(*, scale=1.0, bounds=None)` | `(z, transform, crs)` | DSM 읽기 (정사 모자이크와 해상도·범위가 다름) |
+
+### `MultispectralInfo`
+
+다중분광 정사 모자이크 정보 (`OrthoResult.multispectral`). 0.4.0부터.
+
+| 속성 | 형식 | 설명 |
+|---|---|---|
+| `model` | `str` | 카메라 기종 (예: `"MicaSense RedEdge-P"`) |
+| `bands` | `list[str]` | 밴드 이름 (파장 순). 정사 모자이크 배열의 마지막 축 순서와 같음 |
+| `wavelengths_nm` | `list[float \| None]` | 밴드 중심 파장(nm) |
+| `reference_band` | `str` | 정렬(SfM)에 쓴 기준 밴드 |
+| `values` | `str` | `"reflectance"` 또는 `"radiance"` |
+| `radiometry` | `str` | 실제 쓴 환산 방식 (`"dls+panel"`, `"dls"`, `"panel"`, `"radiance"`) |
+| `indices` | `Path \| None` | 식생지수 GeoTIFF (NIR·Red 등 필요한 밴드가 없으면 `None`) |
+| `index_names` | `list[str]` | 지수 이름 (예: `["NDVI", "NDRE", "GNDVI"]`) |
+| `index_preview` | `Path \| None` | NDVI 컬러 미리보기 PNG |
+| `band_alignment_px` | `dict[str, float]` | 밴드별 정합 잔차(화소) |
+| `capture_inconsistency_pct` | `dict[str, (float, float)] \| None` | 밴드별 캡처 간 반사율 불일치(%) (보정 전, 후). 블록 조정을 안 했으면 `None` |
+| `report` | `dict` | 보고서의 `multispectral` 항목 전체 |
+| `read_indices(index=None, *, scale=1.0, bounds=None)` | `(array, transform, crs)` | 지수 읽기. [`read_indices`](#11-산출물-데이터) 참고 |
+
+```python
+r = qo.process("rededge_flight/", "out/")
+refl, transform, crs = r                     # (H, W, 5) float32 반사율, 자료 없는 곳 NaN
+ms = r.multispectral
+nir = refl[..., ms.bands.index("NIR")]
+ndvi, _, _ = ms.read_indices("NDVI")         # (H, W)
+```
 
 ### `RefineResult`
 
@@ -540,7 +573,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 ### `STAGES`
 
 단계 이름 → 한국어 설명 dict. 키: `scan`, `footprints`, `quicklook`, `features`, `matching`, `mapping`, `georef`,
-`dsm`, `color`, `ortho`, `finalize`, `refine`.
+`dsm`, `color`, `bands`(다중분광), `ortho`, `finalize`, `refine`.
 
 ### `print_progress(event)`
 
@@ -622,11 +655,11 @@ QuickOrthoError            (모든 SDK 예외의 기반, Exception 상속)
 |---|---|---|---|
 | `InputError` | `folder_not_found` | 영상 폴더 없음 | 404 |
 | `InputError` | `file_not_found` | (래스터 읽기) 파일 없음 | 404 |
-| `InputError` | `no_images` | JPG 영상 없음 | 422 |
+| `InputError` | `no_images` | 영상(JPG 또는 다중분광 TIFF) 없음 | 422 |
 | `InputError` | `too_few_images` | 처리 대상 영상 3장 미만 | 422 |
 | `InputError` | `too_few_gps` | GPS 있는 영상 3장 미만 | 422 |
 | `InputError` | `no_gps` | (미리보기) GPS 있는 영상 없음 | 422 |
-| `InputError` | `image_dir_missing` | 정렬 후 원본 영상 폴더가 없어짐 | 409 |
+| `InputError` | `image_dir_missing` | 정렬 후 원본 영상 폴더(다중분광은 원본 밴드 폴더)가 없어지거나 정렬 결과와 맞지 않음 | 409 |
 | `InputError` | `empty_file` | GCP 파일이 비어 있음 | 422 |
 | `InputError` | `invalid_edits` | 보정 수정 사항 형식 오류 | 422 |
 | `InputError` | `invalid_argument` | 인자·옵션 오류 (옵션 값, 없는 외부 DSM, `scale`·`order`, GCP 열·좌표계를 정할 수 없음 등) | 400 |
@@ -678,17 +711,31 @@ COLMAP 내부 로그는 오류(ERROR) 수준만 출력되며, 표준 출력이 �
 
 사용 예와 좌표 규약은 [산출물을 변수로 쓰기](outputs.md)에 자세히 정리함.
 
-### `read_orthomosaic(target, *, scale=1.0, bounds=None, order="RGBA") -> (image, transform, crs)`
+### `read_orthomosaic(target, *, scale=1.0, bounds=None, order=None) -> (image, transform, crs)`
 
 | 인자 | 설명 |
 |---|---|
 | `target` | 워크스페이스 폴더 또는 `orthomosaic.tif` 경로 |
 | `scale` | 읽을 배율 (0 < scale ≤ 1). COG 오버뷰를 씀 |
-| `bounds` | 지도 좌표 범위 `(xmin, ymin, xmax, ymax)`만 읽음. 결과 밖은 0 |
-| `order` | `"RGBA"`, `"RGB"`, `"BGRA"`, `"BGR"` |
+| `bounds` | 지도 좌표 범위 `(xmin, ymin, xmax, ymax)`만 읽음. 결과 밖은 0 (다중분광은 NaN) |
+| `order` | (RGB 결과) `"RGBA"`(기본), `"RGB"`, `"BGRA"`, `"BGR"`. 다중분광 결과에는 쓸 수 없음 |
 
-- `image`: `(H, W, C)` uint8, `transform`: `affine.Affine`(읽은 배열 기준), `crs`: `pyproj.CRS`
-- 예외: `ProjectError`(`not_rendered`), `InputError`(`invalid_argument`: 잘못된 scale·order, `file_not_found`: 경로로 준 파일이 없음)
+- `image`: RGB는 `(H, W, C)` uint8, 다중분광은 `(H, W, 밴드)` float32 (반사율 또는 방사휘도, 자료 없는 곳 NaN, 밴드 순서는 `band_names()`)
+- `transform`: `affine.Affine`(읽은 배열 기준), `crs`: `pyproj.CRS`
+- 예외: `ProjectError`(`not_rendered`), `InputError`(`invalid_argument`: 잘못된 scale·order, 다중분광에 order 지정, `file_not_found`: 경로로 준 파일이 없음)
+- 0.4.0에서 `order` 기본값을 `"RGBA"`에서 `None`으로 바꿈 (RGB 결과의 동작은 같음)
+
+### `read_indices(target, index=None, *, scale=1.0, bounds=None) -> (array, transform, crs)`
+
+다중분광 식생지수(`indices.tif`)를 읽음. `target`은 워크스페이스 폴더 또는 `indices.tif` 경로.
+`index`(`"NDVI"`, `"NDRE"`, `"GNDVI"`, 대소문자 무관)를 주면 `(H, W)`, 없으면 `(H, W, 지수)`.
+지수는 정규화 차 (a − b)/(a + b): NDVI = (NIR, Red), NDRE = (NIR, Red edge), GNDVI = (NIR, Green). 필요한 밴드가 있는 것만 만듦.
+예외: `ProjectError`(`not_rendered`: 지수 파일 없음), `InputError`(`invalid_argument`: 없는 지수 이름).
+
+### `band_names(target) -> list[str]`
+
+GeoTIFF의 밴드 이름 (밴드 설명). `target`은 워크스페이스 폴더(`orthomosaic.tif`) 또는 GeoTIFF 경로.
+다중분광 정사 모자이크는 `["Blue", "Green", "Red", "Red edge", "NIR"]`처럼, 지수 파일은 `["NDVI", "NDRE", "GNDVI"]`처럼 나옴.
 
 ### `read_dsm(target, *, scale=1.0, bounds=None) -> (z, transform, crs)`
 
@@ -721,6 +768,33 @@ COLMAP 내부 로그는 오류(ERROR) 수준만 출력되며, 표준 출력이 �
 ### `rotation_from_opk(omega, phi, kappa) -> ndarray`
 
 ω, φ, κ(도) → R (지도 → 카메라, 3×3). `CameraPose.opk`의 역변환.
+
+### `quickortho.multispectral` (모듈)
+
+정사 모자이크 없이 다중분광 밴드 영상의 방사보정만 쓸 때의 저수준 함수. 0.4.0에서 새로 공개했으며 1.0 전까지 바뀔 수 있음.
+
+| 이름 | 설명 |
+|---|---|
+| `scan(folder) -> MsDataset \| None` | 폴더의 밴드 TIFF를 캡처별로 묶음. 다중분광 영상이 없으면 `None` |
+| `MsDataset` | `root`, `captures`(캡처 → rig 번호 → `BandImage`), `ref_index`, `out_indices`, `panel_captures`, `incomplete`, `flight_captures`, `band_names()`, `wavelengths()`, `model` |
+| `BandImage` | 밴드 영상 한 장의 메타데이터 (밴드, 파장, 흑색 수준, 노출, 이득, 방사보정 계수, 주변 감광, 내부표정, rig, DLS, 패널) |
+| `read_band(path, root) -> BandImage \| None` | 한 장의 메타데이터 읽기 |
+| `read_raw(path) -> ndarray` | 원시 값 (float32) |
+| `vignette(band) -> ndarray` | 주변 감광 보정 배율 V |
+| `radiance(band, raw, vig=None) -> ndarray` | 원시 값 → 방사휘도 (W/m²/sr/nm) |
+| `panel_stats(band, root) -> dict \| None` | 패널 영역 방사휘도와 DLS 기준 반사율 |
+| `reflectance_factors(ds, mode="auto") -> (factors, info)` | 캡처·밴드별 반사율 환산 계수 `{capture: {rig 번호: 계수}}`와 정보 |
+
+```python
+from quickortho import multispectral as ms
+
+ds = ms.scan("rededge_flight/")
+factors, info = ms.reflectance_factors(ds, "auto")
+cap = ds.flight_captures[0]
+i = ds.out_indices[ds.band_names().index("NIR")]
+b = ds.captures[cap][i]
+nir = ms.radiance(b, ms.read_raw(ds.root / b.file)) * factors[cap][i]   # 원본 영상 좌표의 반사율
+```
 
 ### `doctor(path=".") -> dict`
 

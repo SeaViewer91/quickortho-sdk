@@ -8,7 +8,11 @@
 | `dsm.tif` | GeoTIFF, float32, deflate 압축 | 정사투영에 쓴 간이 DSM (m). 해상도는 점군 간격 수준(수 m) |
 | `preview.png` | PNG RGBA | 정사 모자이크를 긴 변 2048px 이하로 줄인 미리보기 |
 | `report.json` | JSON (UTF-8) | 처리 보고서 (2절) |
+| `indices.tif` | (다중분광) GeoTIFF (COG), float32, nodata NaN | 식생지수 NDVI·NDRE·GNDVI 중 계산 가능한 것 (밴드 설명에 이름) |
+| `ndvi.png` | (다중분광) PNG RGBA | NDVI −0.2~0.9를 갈색→초록으로 칠한 미리보기 |
 
+- 다중분광이면 `orthomosaic.tif`가 밴드별 float32 반사율(nodata NaN, 예측자 3, 밴드 설명에 밴드 이름)이고,
+  `preview.png`는 반사율 R·G·B(Blue가 없으면 NIR·Red·Green 위색)를 1~99백분위로 늘인 것임
 - 좌표계: 보정 전에는 WGS84 UTM(촬영 위치 기준 자동), GCP 보정 후에는 GCP 좌표계
 - `preview.png`를 웹 지도에 겹칠 때는 `report.json`의 `preview_corners_lonlat`(네 모서리 경위도)을 씀.
   MapLibre의 image source 좌표 순서(좌상, 우상, 우하, 좌하)와 같음
@@ -33,7 +37,7 @@ with rasterio.open(result.orthomosaic) as ds:
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.3.1",
+  "engine_version": "0.4.0",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,
@@ -111,13 +115,34 @@ with rasterio.open(result.orthomosaic) as ds:
 | `ortho.color` | (보정 시) `{"cell_m": 보정 격자 셀 크기(m), "grid": [64, 48] 영상별 이득 맵 크기, "images": 이득 맵을 만든 영상 수, "gain_p5", "gain_p95": 이득(세 채널 평균)의 5·95 백분위}`. 1에서 멀수록 영상 간 밝기 차이가 컸다는 뜻임. 이득 맵을 만든 영상이 없으면 `color` 항목 없이 `color_balance`가 `false`임 |
 | `outputs.*` | 결과 파일 절대 경로 |
 | `preview_corners_lonlat` | 결과 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
-| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합 |
+| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합 |
 | `peak_memory_mb` | 정렬·마지막 정사 모자이크 중 최대 메모리(RSS, MB) |
 | `warnings` | 경고 (정렬 경고 + 보정 경고) |
 | `refine` | (보정 후) 보정 결과. 아래 표 |
 
 - `outputs`의 경로는 절대 경로임. 서버에서 외부에 알릴 때는 다운로드 URL 등으로 바꿔서 내보냄
 - 읽는 쪽은 모르는 키를 무시해야 함. 같은 `report_version` 안에서 키가 추가될 수 있음
+
+### `multispectral` 항목 (다중분광)
+
+다중분광 결과에만 있음 (0.4.0부터). `outputs`에 `indices`, `index_preview`가, `ortho`에 `bands`(밴드 이름)와
+`reference_gsd_m`(기준 밴드 원본 GSD)가 추가되고, `input.multispectral`에 스캔 요약이 들어감. `ortho.source_gsd_m`은 출력 밴드의 원본 GSD임.
+
+| 필드 | 내용 |
+|---|---|
+| `model` | 카메라 기종 |
+| `bands` | `[{"name", "wavelength_nm"}]` 출력 밴드 (정사 모자이크 밴드 순서) |
+| `reference_band` | 정렬에 쓴 기준 밴드 |
+| `values` | `reflectance` 또는 `radiance` |
+| `indices` | 만든 식생지수 이름 |
+| `preview` | `true_color`, `false_color`, `gray` (미리보기 색 구성) |
+| `radiometry.mode` | 실제 쓴 반사율 환산 방식 |
+| `radiometry.irradiance_cv` | (DLS) 밴드별 비행 중 입사광 변동계수 |
+| `radiometry.panel` | (패널 촬영이 있으면) 밴드별 `albedo`, `radiance`, `reflectance_dls`, `saturated_frac`(포화 비율), `count` |
+| `radiometry.panel_correction` | (DLS) 밴드별 패널 배율 k (`dls`만 쓰면 1) |
+| `radiometry.panel_missing_bands` | 패널 촬영은 있지만 패널 정보가 없는 밴드 (이때 패널 보정을 쓰지 않음, 경고) |
+| `radiometry.band_alignment` | rig 미세 조정: `captures`(쓴 캡처 수), `initial`(조정 전), `residual`(조정 후). 밴드별 `shift_px`(중앙값 이동), `spread_px`(MAD), `n` |
+| `radiometry.capture_normalization` | 블록 조정: `applied`, `points`(쓴 타이포인트 수), 밴드별 `inconsistency_before_pct`·`inconsistency_after_pct`(캡처 간 불일치 RMS %), `gain_min`·`gain_max` |
 
 ### `refine` 항목
 
@@ -136,7 +161,7 @@ with rasterio.open(result.orthomosaic) as ds:
 | `before`, `after` | 보정 전후 재투영 통계 `{"num_points", "num_observations", "mean_px", "rmse_px", "p95_px", "max_px"}` |
 | `gcps` | GCP별 오차 표 (`RefineResult.gcps`와 같음) |
 | `gcp_summary` | `{"control": {...}, "check": {...}}` 역할별 RMSE(m) |
-| `timings_s` | 보정 단계별 시간 (`adjust_s`, `dsm_s`, `color_s`, `ortho_s`, `finalize_s`, `total_s`) |
+| `timings_s` | 보정 단계별 시간 (`adjust_s`, `dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`, `total_s`) |
 | `peak_memory_mb` | 보정 중 최대 메모리 |
 | `warnings` | 보정 경고 |
 

@@ -41,6 +41,8 @@ scan → features → matching → mapping → georef → dsm → color → orth
 - `orthomosaic()`만 부르면 `dsm → color → ortho → finalize`
 - `refine()`은 `refine → refine → dsm → color → ortho → finalize` (준비, 번들 조정)
 - `color`는 `color_balance=False`이거나 정합된 영상이 1장이면 나오지 않음
+- 다중분광은 `scan → scan → features → matching → mapping → georef → dsm → bands → ortho → finalize`
+  (두 번째 `scan`은 기준 밴드 8비트 영상 준비, `color` 대신 `bands`). `refine()`도 `color` 대신 `bands`가 나옴
 - `preview()`는 `scan → footprints → quicklook`(quicklook은 `quicklook=True`일 때만)
 
 ### 전체 진행률 계산
@@ -51,7 +53,7 @@ scan → features → matching → mapping → georef → dsm → color → orth
 
 ```python
 WEIGHTS = {"scan": 1, "features": 16, "matching": 6, "mapping": 12, "georef": 1,
-           "dsm": 1, "color": 3, "ortho": 40, "finalize": 24}
+           "dsm": 1, "color": 3, "bands": 3, "ortho": 40, "finalize": 24}
 ORDER = list(WEIGHTS)
 
 class Overall:
@@ -110,6 +112,7 @@ th.join()           # 처리 스레드에서 qo.Cancelled 발생 후 종료
 |---|---|
 | `scan`, `ortho`, `quicklook` | 진행률 1% 단위 (예: 타일 500개면 타일 5개마다) |
 | `dsm` | DSM 계산이 끝난 뒤 (보통 1초 이내) |
+| `bands` | (다중분광) rig 미세 조정 1회, 2회, 잔차 측정, 블록 조정이 끝날 때마다 (`total` 4). 실제 데이터 24캡처에서 각각 수~수십 초 |
 | `color` | 영상 단위 (두 번 통과하며 영상 수 × 2의 1% 단위로 확인. 영상 1장 처리는 보통 1초 이내) |
 | `features`, `matching` | **현재 COLMAP 호출이 끝난 뒤**. COLMAP 계산은 중간에 끊을 수 없음 |
 | `mapping` | SfM 계산이 끝난 뒤 |
@@ -204,7 +207,7 @@ for line in proc.stdout:
 - 워커 수는 서버 코어·메모리에 맞춰 정함 (작업 하나가 모든 코어를 씀. 8코어 32GB 서버 기준 2개 정도에서 시작)
 - 작업 취소는 해당 워커 프로세스를 종료하고 새로 띄움
 - 결과 파일은 워크스페이스 경로를 작업 ID로 나눠 보관하고, 보관 기간을 정해 지움
-- 이 구성을 이후 버전(0.4.0 예정)에서 SDK의 작업 실행기(Job Runner)로 제공할 예정임
+- 이 구성을 이후 버전(0.5.0 예정)에서 SDK의 작업 실행기(Job Runner)로 제공할 예정임
 
 ## 5. 로그로 남기기
 

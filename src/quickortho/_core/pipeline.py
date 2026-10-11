@@ -21,7 +21,18 @@ from rasterio.transform import from_origin
 from .._version import __version__
 from ..errors import InputError, ProcessingError
 from ..options import OrthoOptions
+from . import multispectral as msp
 from .color import estimate_gains
+from .ms_ortho import (
+    band_gsd,
+    build_band_sources,
+    normalize_captures,
+    refine_rig,
+    render_ms_orthomosaic,
+    write_index_preview,
+    write_indices,
+    write_rgb_preview,
+)
 from .ortho import build_views, finalize_cog, native_gsd, render_orthomosaic
 from .geo import Projector
 from .project import Project, to_absolute
@@ -57,7 +68,7 @@ class PeakMemory:
 
 
 REPORT_VERSION = 1
-PRODUCT_FILES = ("orthomosaic.tif", "dsm.tif", "preview.png")
+PRODUCT_FILES = ("orthomosaic.tif", "dsm.tif", "preview.png", "indices.tif", "ndvi.png")
 
 
 def run_align(
@@ -76,6 +87,8 @@ def run_align(
     timings: dict[str, float] = {}
     warnings: list[str] = []
 
+    msref = Project(out_dir).dir / "msref"
+    msref_new = Project(out_dir).dir / "msref.new"
     with PeakMemory() as mem:
         try:
             # 0) 스캔
@@ -89,7 +102,36 @@ def run_align(
                 if im["lat"] is not None and im["lon"] is not None
             }
             if not scan["images"]:
-                raise InputError(f"JPG 영상이 없음: {folder}", "no_images")
+                raise InputError(f"영상이 없음 (JPG 또는 다중분광 TIFF): {folder}", "no_images")
+            # 다중분광: 기준 밴드를 8비트 영상으로 바꿔 SfM에 쓰고(project/msref), 정사 단계에서 모든 밴드를 투영함
+            # 기준 밴드 영상은 임시 폴더(msref.new)에 만들고 정렬이 끝난 뒤 msref와 바꾼다.
+            # 새 정렬이 중단·실패해도 이전 다중분광 워크스페이스는 그대로 쓸 수 있게 하기 위해서다
+            ms_ds, image_dir, sfm_kw = None, folder, {}
+            shutil.rmtree(msref_new, ignore_errors=True)
+            if scan.get("multispectral"):
+                ms_ds = msp.scan_multispectral(folder)
+                ms_info = scan["multispectral"]
+                caps = [c for c in ms_ds.flight_captures if ms_ds.ref(c).file in gps]
+                if len(caps) < len(ms_ds.flight_captures):
+                    warnings.append(f"GPS가 없는 캡처 {len(ms_ds.flight_captures) - len(caps)}개는 제외함")
+                if ms_info["incomplete_captures"]:
+                    warnings.append(f"밴드가 빠진 캡처 {ms_info['incomplete_captures']}개는 제외함")
+                n_jpg = sum(1 for im in scan["images"] if im.get("band") is None)
+                if n_jpg:
+                    warnings.append(f"같은 폴더의 JPG {n_jpg}장은 쓰지 않음 (다중분광 영상만 처리함)")
+                if len(caps) < 3:
+                    raise InputError("GPS가 있는 다중분광 캡처가 3개 미만임", "too_few_gps")
+                _check_radiometry_available(opts.radiometry, ms_info)
+                out.stage("scan", f"다중분광 기준 밴드 영상 준비 ({len(caps)}장)")
+                names = msp.write_ref_proxies(
+                    ms_ds, caps, msref_new, progress=lambda i, n: out.progress("scan", i, n)
+                )
+                gps = {msp.proxy_name(ms_ds.ref(c).file): gps[ms_ds.ref(c).file] for c in caps}
+                images = [{"file": n} for n in names]
+                image_dir = msref_new
+                ref0 = ms_ds.ref(caps[0])
+                sfm_kw = dict(camera_model="FULL_OPENCV", camera_params=msp.camera_params_string(ref0),
+                              fixed_intrinsics=True)
             if len(images) < 3:
                 raise InputError("처리 가능한 영상이 3장 미만임", "too_few_images")
             if len(gps) < 3:
@@ -101,7 +143,8 @@ def run_align(
 
             # 1) SfM
             rec, sfm_stats = run_sfm(
-                folder, [im["file"] for im in images], work, has_gps=len(gps) >= 3, opts=opts.sfm, out=out
+                image_dir, [im["file"] for im in images], work, has_gps=len(gps) >= 3, opts=opts.sfm, out=out,
+                **sfm_kw,
             )
             timings.update(
                 features_s=sfm_stats["time_features_s"],
@@ -122,9 +165,14 @@ def run_align(
 
             # 보정용 프로젝트 저장 (지역 좌표계)
             proj = Project(out_dir)
+            shutil.rmtree(msref, ignore_errors=True)  # 이전 정렬의 기준 밴드 영상 (새 정렬과 맞지 않음)
+            if ms_ds is not None:
+                os.replace(msref_new, msref)
+                image_dir = msref
             proj.save_base(rec, geo.projector.epsg, geo.origin)
-            proj.save_meta(folder, gps, __version__, render={})
+            proj.save_meta(image_dir, gps, __version__, render={}, ms_source=folder if ms_ds else None)
         finally:
+            shutil.rmtree(msref_new, ignore_errors=True)
             if not opts.keep_work:
                 shutil.rmtree(work, ignore_errors=True)
 
@@ -140,6 +188,7 @@ def run_align(
             "selected": len(images),
             "with_gps": len(gps),
             "cameras": scan["cameras"],
+            **({"multispectral": scan["multispectral"]} if scan.get("multispectral") else {}),
         },
         "sfm": {k: v for k, v in sfm_stats.items() if not k.startswith("time_")},
         "georef": {
@@ -175,12 +224,38 @@ def run_render(
         rec, frame, _ = proj.load_current()
         rec_abs, epsg = to_absolute(rec, frame), frame.epsg
     assert epsg is not None
+    ms_ds = ms_dataset_from_meta(proj.meta())
     timings: dict[str, float] = {}
     with PeakMemory() as mem:
-        products = render_products(rec_abs, image_dir, proj.ortho_dir, epsg, opts, out, timings)
+        products = render_products(rec_abs, image_dir, proj.ortho_dir, epsg, opts, out, timings, ms_ds=ms_ds)
     proj.update_render(opts.render_dict(), __version__)
     timings["render_total_s"] = time.perf_counter() - t_start
     return compose_report(proj, products, timings, mem.peak)
+
+
+def _check_radiometry_available(mode: str, ms_info: dict) -> None:
+    """명시한 반사율 방식에 필요한 자료(DLS·패널 촬영)가 없으면 정렬(SfM) 전에 알린다.
+
+    밴드마다 패널 정보가 다 있는지는 패널 영상을 읽어야 알 수 있어 정사 단계에서 다시 확인한다.
+    """
+    if mode in ("dls", "dls+panel") and not ms_info.get("has_dls"):
+        raise InputError("입사광 센서(DLS) 값이 없는 캡처가 있어 DLS 방식을 쓸 수 없음", "invalid_argument")
+    if mode in ("panel", "dls+panel") and not ms_info.get("panel_captures"):
+        raise InputError("패널 촬영 영상이 없어 패널 방식을 쓸 수 없음", "invalid_argument")
+
+
+def ms_dataset_from_meta(meta: dict) -> "msp.MsDataset | None":
+    """다중분광 워크스페이스면 원본 밴드 폴더를 다시 읽는다 (정사 단계에서 모든 밴드가 필요)."""
+    info = meta.get("multispectral")
+    if not info:
+        return None
+    src = Path(info["source_dir"])
+    if not src.is_dir():
+        raise InputError(f"다중분광 원본 영상 폴더를 찾을 수 없음: {src}", "image_dir_missing")
+    ds = msp.scan_multispectral(src)
+    if ds is None:
+        raise InputError(f"다중분광 영상을 찾지 못함: {src}", "image_dir_missing")
+    return ds
 
 
 def _version_tuple(v) -> tuple[int, int, int]:
@@ -273,6 +348,8 @@ def compose_report(
         align = align_report_from_project(proj)
         proj.save_align_report(align)
     report = dict(align)
+    products = dict(products)
+    extra_warnings = list(products.pop("_warnings", [])) + list(extra_warnings or [])  # 이번 정사 단계의 경고
     report.update(products)
     report["report_version"] = REPORT_VERSION
     report["engine_version"] = __version__
@@ -318,10 +395,12 @@ def render_products(
     opts: OrthoOptions,
     out: Emitter,
     timings: dict[str, float],
+    ms_ds: "msp.MsDataset | None" = None,
 ) -> dict:
     """투영 좌표(절대값) 재구성으로 간이 DSM, 정사 모자이크(COG), 미리보기를 만든다.
 
-    반환: 보고서의 dsm, ortho, outputs, preview_corners_lonlat 항목.
+    ms_ds가 있으면 다중분광: 정사 모자이크는 밴드별 반사율(float32), 식생지수 GeoTIFF를 함께 만든다.
+    반환: 보고서의 dsm, ortho, outputs, preview_corners_lonlat (다중분광이면 multispectral) 항목.
     """
     crs = CRS.from_epsg(epsg)
     t0 = time.perf_counter()
@@ -341,6 +420,18 @@ def render_products(
     views = build_views(rec, ground_z)
     src_gsd = native_gsd(views, ground_z)
     gsd = opts.gsd_m or src_gsd * opts.gsd_scale
+    if ms_ds is not None:
+        try:
+            factors, radiometry = msp.reflectance_factors(ms_ds, opts.radiometry)
+        except ValueError as e:  # 요청한 반사율 방식에 필요한 DLS·패널이 없음
+            raise InputError(str(e), "invalid_argument") from e
+        sources = build_band_sources(views, ms_ds, factors)
+        views = [v for v in views if v.name in sources]
+        if len(views) < 1:
+            raise InputError("원본 밴드 폴더의 영상이 정렬 결과와 맞지 않음 (정합된 캡처의 밴드 영상을 찾지 못함)",
+                             "image_dir_missing")
+        bgsd = band_gsd(sources, ground_z)
+        gsd = opts.gsd_m or bgsd * opts.gsd_scale  # 출력은 다중분광 밴드의 원본 해상도 기준
     if opts.bounds is not None:
         raw_bounds = tuple(float(v) for v in opts.bounds)
     else:
@@ -367,6 +458,9 @@ def render_products(
     tmp = out_dir / "orthomosaic.tmp.tif"
     cog_tmp = out_dir / "orthomosaic.cog.tmp.tif"
     final = out_dir / "orthomosaic.tif"
+    if ms_ds is not None:
+        return _render_ms(views, sources, ms_ds, factors, radiometry, rec, dsm, dsm_info, dsm_res, ground_z,
+                          bounds, crs, gsd, src_gsd, bgsd, out_dir, opts, out, timings, t0)
     try:
         _write_dsm(dsm, dsm_tmp, crs)
         timings["dsm_s"] = time.perf_counter() - t0
@@ -415,6 +509,112 @@ def render_products(
             "dsm": str(out_dir / "dsm.tif"),
             "preview": str(out_dir / "preview.png"),
         },
+        "preview_corners_lonlat": corners,
+    }
+
+
+def _render_ms(views, sources, ds, factors, radiometry, rec, dsm, dsm_info, dsm_res, ground_z, bounds, crs,
+               gsd, src_gsd, bgsd, out_dir, opts, out, timings, t0):
+    """다중분광 정사: 밴드 정합 미세 조정 → 캡처 간 반사율 보정 → 반사율 정사 모자이크 → 식생지수·미리보기.
+
+    결과물은 RGB와 같이 임시 파일에 쓰고 마지막에 교체한다 (중단·실패 시 이전 결과 유지).
+    """
+    dsm_tmp = out_dir / "dsm.tmp.tif"
+    tmp = out_dir / "orthomosaic.tmp.tif"
+    cog_tmp = out_dir / "orthomosaic.cog.tmp.tif"
+    itmp = out_dir / "indices.tmp.tif"
+    icog_tmp = out_dir / "indices.cog.tmp.tif"
+    final = out_dir / "orthomosaic.tif"
+    names = ds.band_names()
+    try:
+        _write_dsm(dsm, dsm_tmp, crs)
+        timings["dsm_s"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        out.stage("bands", "밴드 정합 미세 조정·캡처 간 반사율 보정")
+        # rig 미세 조정은 두 번 반복 (첫 추정이 약간 과하게 나오는 경향이 있어 두 번째에 0.1화소 이내로 수렴)
+        rig_corr: dict = {}
+        rig_stats: dict = {}
+        for it in range(2):
+            corr, st = refine_rig(views, sources, ds, dsm, ground_z)
+            rig_corr = {i: corr[i] @ rig_corr[i] if i in rig_corr else corr[i] for i in corr}
+            sources = build_band_sources(views, ds, factors, rig_corr=rig_corr)
+            if it == 0:
+                rig_stats = {"captures": st["captures"], "initial": st["bands"]}
+            out.progress("bands", it + 1, 4)  # 중단 확인 지점
+        _, st = refine_rig(views, sources, ds, dsm, ground_z, max_captures=4)
+        rig_stats["residual"] = st["bands"]
+        radiometry["band_alignment"] = rig_stats
+        out.progress("bands", 3, 4)
+        if opts.ms_normalize and radiometry["mode"] != "radiance":
+            gains, norm_stats = normalize_captures(rec, views, sources, ds)
+            for n, srcs in sources.items():
+                for k, src in enumerate(srcs):
+                    src.factor *= gains[n][k]
+            radiometry["capture_normalization"] = norm_stats
+        out.progress("bands", 4, 4)
+        timings["bands_s"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        out.stage("ortho", f"다중분광 정사 모자이크 생성 ({len(names)}밴드, GSD {gsd * 100:.1f} cm)")
+        ortho_stats = render_ms_orthomosaic(
+            views, sources, names, dsm, ds.root, tmp, crs, gsd, src_gsd, bgsd, bounds, out,
+            cache_budget_mb=opts.cache_budget_mb,
+        )
+        timings["ortho_s"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        out.stage("finalize", "COG 변환·식생지수·미리보기 생성")
+        finalize_cog(tmp, cog_tmp)
+        index_names = write_indices(cog_tmp, itmp, names)
+        if index_names:
+            finalize_cog(itmp, icog_tmp)
+        out.progress("finalize", 1, 1)  # 중단 확인 지점 (결과물 교체 전)
+        os.replace(cog_tmp, final)
+        os.replace(dsm_tmp, out_dir / "dsm.tif")
+        if index_names:
+            os.replace(icog_tmp, out_dir / "indices.tif")
+        else:
+            for f in (out_dir / "indices.tif", out_dir / "ndvi.png"):
+                f.unlink(missing_ok=True)
+    finally:
+        for f in (dsm_tmp, tmp, cog_tmp, itmp, icog_tmp):
+            f.unlink(missing_ok=True)
+    preview = write_rgb_preview(final, out_dir / "preview.png", names)
+    outputs = {"orthomosaic": str(final), "dsm": str(out_dir / "dsm.tif"), "preview": str(out_dir / "preview.png")}
+    if index_names:
+        write_index_preview(out_dir / "indices.tif", out_dir / "ndvi.png", band=1)
+        outputs["indices"] = str(out_dir / "indices.tif")
+        outputs["index_preview"] = str(out_dir / "ndvi.png")
+    corners = _corners_lonlat(final)
+    timings["finalize_s"] = time.perf_counter() - t0
+    any_cap = next(iter(ds.captures.values()))
+    render_warnings = []
+    if radiometry.get("panel_missing_bands"):  # auto에서만 기록됨 (명시한 방식은 사용자가 고른 것)
+        missing = ", ".join(radiometry["panel_missing_bands"])
+        if radiometry["mode"] == "dls":
+            render_warnings.append(
+                f"패널 촬영이 있지만 {missing} 밴드에 패널 정보가 없어 패널 보정 없이 DLS만으로 반사율을 구함. "
+                "반사율 수준이 크게 어긋날 수 있음 (패널을 모든 밴드에 잡히게 다시 촬영하는 것을 권장)"
+            )
+        else:
+            render_warnings.append(
+                f"패널 촬영이 있지만 {missing} 밴드에 패널 정보가 없고 DLS도 없어 반사율로 바꾸지 못함 (방사휘도로 출력)"
+            )
+    return {
+        "_warnings": render_warnings,
+        "dsm": {**dsm_info, "resolution_m": dsm_res, "num_points": dsm.num_points},
+        "ortho": {**ortho_stats, "color_balance": False, "source_gsd_m": bgsd, "reference_gsd_m": src_gsd},
+        "multispectral": {
+            "model": ds.model,
+            "bands": [{"name": any_cap[i].band, "wavelength_nm": any_cap[i].wavelength} for i in ds.out_indices],
+            "reference_band": any_cap[ds.ref_index].band,
+            "values": "radiance" if radiometry["mode"] == "radiance" else "reflectance",
+            "radiometry": radiometry,
+            "indices": index_names,
+            **preview,
+        },
+        "outputs": outputs,
         "preview_corners_lonlat": corners,
     }
 

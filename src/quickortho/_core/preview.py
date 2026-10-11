@@ -303,7 +303,11 @@ def render_quicklook(
     wsum = np.zeros((H, W), np.float32)
     total = len(poses)
 
+    ms_scale: list[float] = []
+
     def load(p: Pose) -> np.ndarray:
+        if Path(p.name).suffix.lower() in (".tif", ".tiff"):
+            return _ms_quicklook(image_dir, p.name, ms_scale)
         with Image.open(image_dir / p.name) as im:
             im.draft("RGB", (max(1, p.width // 8), max(1, p.height // 8)))  # JPEG 1/8 축소 디코딩
             return np.asarray(im.convert("RGB"))
@@ -318,6 +322,23 @@ def render_quicklook(
     rgba[valid, :3] = np.clip(acc[valid] / wsum[valid, None] + 0.5, 0, 255).astype(np.uint8)
     rgba[valid, 3] = 255
     return rgba
+
+
+def _ms_quicklook(image_dir: Path, name: str, scale: list[float]) -> np.ndarray:
+    """다중분광 기준 밴드(12·16비트 TIFF)를 1/8로 줄여 노출을 맞춘 회색 영상으로 만든다.
+
+    배율은 처음 읽은 영상의 99.5 백분위로 정해 모든 영상에 같게 쓴다 (영상마다 늘이면 얼룩덜룩해짐).
+    """
+    from .multispectral import read_band
+
+    b = read_band(image_dir / name, image_dir)
+    with Image.open(image_dir / name) as im:
+        raw = np.asarray(im, dtype=np.float32)[::8, ::8]
+    x = (raw - b.black_level) / (b.gain * b.exposure) if b and b.exposure else raw
+    if not scale:
+        scale.append(float(np.percentile(x, 99.5)) or 1.0)
+    g = (np.clip(x / scale[0], 0, 1) ** 0.5 * 255 + 0.5).astype(np.uint8)
+    return np.repeat(g[..., None], 3, axis=2)
 
 
 def _blend_one(p: Pose, small: np.ndarray, acc, wsum, xmin, ymax, gsd, W, H, power) -> None:

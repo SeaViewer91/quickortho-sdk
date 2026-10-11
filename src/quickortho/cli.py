@@ -71,6 +71,9 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dsm-z", type=float, default=None, help="--dsm plane의 평면 높이(m)")
         p.add_argument("--no-dsm-vertical-align", action="store_true", help="외부 DSM 높이 기준 자동 보정 끄기")
         p.add_argument("--no-color-balance", action="store_true", help="영상 간 밝기·색 차이 보정 끄기")
+        p.add_argument("--radiometry", choices=["auto", "dls+panel", "dls", "panel", "radiance"], default="auto",
+                       help="다중분광 반사율 환산 방식 (기본 auto: 패널·DLS 중 있는 것으로 최선)")
+        p.add_argument("--no-ms-normalize", action="store_true", help="다중분광 캡처 간 반사율 블록 조정 끄기")
 
     def add_epsg(p: argparse.ArgumentParser) -> None:
         p.add_argument("--epsg", type=int, default=None, help="결과 좌표계 EPSG (투영 좌표계, 기본 UTM)")
@@ -161,6 +164,8 @@ def _options(args: argparse.Namespace):
         dsm_z=getattr(args, "dsm_z", None),
         dsm_vertical_align=not getattr(args, "no_dsm_vertical_align", False),
         color_balance=not getattr(args, "no_color_balance", False),
+        radiometry=getattr(args, "radiometry", "auto"),
+        ms_normalize=not getattr(args, "no_ms_normalize", False),
     )
 
 

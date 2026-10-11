@@ -7,13 +7,16 @@ SDK는 **영상 폴더 하나 = 워크스페이스 폴더 하나** 단위로 처
 
 ```text
 <workspace>/
-├── orthomosaic.tif        정사 모자이크 (RGBA, Cloud Optimized GeoTIFF)
+├── orthomosaic.tif        정사 모자이크 (Cloud Optimized GeoTIFF. RGB는 RGBA, 다중분광은 밴드별 float32 반사율)
 ├── dsm.tif                정사투영에 쓴 간이 DSM (float32)
 ├── preview.png            긴 변 2048px 미리보기 (RGBA)
+├── indices.tif            (다중분광) 식생지수 NDVI·NDRE·GNDVI
+├── ndvi.png               (다중분광) NDVI 컬러 미리보기
 ├── report.json            처리 보고서
 ├── preview/               빠른 미리보기 결과 (Project.preview() 실행 시)
 └── project/               정렬 결과·보정 데이터 (SDK가 관리함. 직접 수정하지 않음)
-    ├── meta.json          영상 폴더 경로, 영상별 GPS, SDK 버전, 마지막 정사 모자이크 옵션
+    ├── meta.json          영상 폴더 경로, 영상별 GPS, SDK 버전, 마지막 정사 모자이크 옵션 (다중분광은 원본 밴드 폴더)
+    ├── msref/             (다중분광) SfM에 쓴 기준 밴드 8비트 영상 (<원래 이름>.jpg)
     ├── base/              정렬 직후 재구성 (COLMAP 형식, 지역 좌표계)
     ├── base_frame.json    base 좌표계 {"epsg", "origin"}
     ├── align_report.json  정렬 단계 보고서
@@ -85,6 +88,7 @@ scan → (preview) → features → matching → mapping → georef → dsm → 
 | `mapping` | 전역 SfM(GLOMAP 방식)을 먼저 시도하고, 정합률이 `min_registered_ratio`(기본 80%) 미만이면 증분 SfM으로 다시 시도해 더 많이 정합된 쪽을 씀 |
 | `georef` | 카메라 중심과 GPS 위치(UTM)의 닮음변환(회전·축척·이동)을 RANSAC(허용 오차 10m)으로 구해 적용함 |
 | `dsm` | 희소 점군에서 재투영 오차 2px 초과·관측 3장 미만 점과 높이 이상치를 빼고 격자로 보간함. 점군 밖은 가우시안 정규화 합성곱으로 부드럽게 외삽함 |
+| `bands` | (다중분광) 밴드 정합 미세 조정, 캡처 간 반사율 보정 ([10절](#10-다중분광-처리)) |
 | `color` | 영상 간 밝기·색 보정. 영상마다 완만한 이득 곡면을 구함 ([밝기·색 보정](#밝기색-보정)). `color_balance=False`이거나 영상이 1장이면 건너뜀 |
 | `ortho` | 출력 512px 타일마다 DSM에 역투영하고, 화소마다 영상 중심에 가장 가까운 영상 하나로 칠함. 영상 경계 몇 화소만 섞음 ([심라인 합성](#8-정사-모자이크-합성-심라인)). 타일은 4×4 묶음 순서로 처리해 같은 영상을 연달아 씀 |
 | `finalize` | 오버뷰 생성, COG 변환, 미리보기 PNG 생성 |
@@ -92,7 +96,8 @@ scan → (preview) → features → matching → mapping → georef → dsm → 
 
 ## 3. 입력 영상 조건
 
-- **형식**: JPG(`.jpg`, `.jpeg`)만 읽음. 하위 폴더는 기본으로 읽지 않음 (`scan(recursive=True)`는 스캔만 지원)
+- **형식**: JPG(`.jpg`, `.jpeg`). 다중분광 카메라(MicaSense RedEdge·Altum 계열)의 밴드 TIFF도 읽음 ([10절](#10-다중분광-처리)).
+  하위 폴더는 기본으로 읽지 않음 (`scan(recursive=True)`는 스캔만 지원)
 - **GPS**: 처리 대상 영상 중 GPS가 있는 영상이 **3장 이상** 있어야 함. GPS가 없는 영상도 SfM에는 쓰지만 좌표 정렬에는 쓰지 않음
 - **최소 장수**: 처리 대상 영상 3장 이상. 실제로는 중복도가 충분한 10장 이상을 권장함
 - **촬영 자세**: 연직 촬영을 전제로 함. 짐벌 pitch가 -70°보다 큰(덜 숙인) 영상은 경사 촬영으로 표시하고 경고함. 처리에서 빼지는 않음
@@ -212,3 +217,75 @@ SDK는 같은 기종(제조사+모델) 안에 카메라(초점거리·해상도 
 - XMP가 없으면 진행 방향으로 yaw를 추정하고 35mm 환산 24mm 화각을 가정함 (경고 표시)
 
 위치 오차가 수 m 수준이므로 **촬영 누락 확인용**이며, 측정에는 쓰지 않음.
+
+## 10. 다중분광 처리
+
+MicaSense RedEdge-MX·RedEdge-P·Altum·Altum-PT의 밴드 TIFF 폴더를 RGB 폴더와 같은 함수로 처리함
+(`qo.process()`, `Project.create(...).process()`). 폴더에 다중분광 영상이 있으면 자동으로 이 경로를 탐.
+결과 `orthomosaic.tif`는 밴드별 **반사율**(float32)이고, 식생지수 `indices.tif`를 함께 만듦.
+
+### 영상 인식
+
+- 폴더의 TIFF 중 Pix4D 카메라 XMP(`Camera:BandName`, `Camera:RigCameraIndex`)가 있는 파일만 밴드 영상으로 봄
+- `MicaSense:CaptureId`로 같은 순간에 찍은 밴드를 한 캡처로 묶음. 밴드가 빠진 캡처, GPS가 없는 캡처는 제외하고 경고함
+- 패널 촬영(`Camera:CalibrationPicture=2`와 `Albedo`·`ReflectArea`가 있는 캡처)은 정렬에서 빼고 반사율 계산에만 씀
+- 같은 폴더의 JPG는 쓰지 않음 (경고)
+- 하위 폴더는 읽지 않음. MicaSense 카메라는 `SET/000/IMG_*.tif`처럼 저장하므로 `000` 폴더(또는 밴드 TIFF를 모은 폴더)를 지정함
+- 명시한 `radiometry`에 필요한 자료(DLS·패널 촬영)가 없으면 정렬(SfM) 전에 `invalid_argument`로 알림
+
+### 처리 순서
+
+```text
+scan → scan(기준 밴드 영상 준비) → features → matching → mapping → georef → dsm → bands → ortho → finalize
+```
+
+1. **기준 밴드**: 팬크로매틱이 있으면 그것, 없으면 560nm에 가장 가까운 밴드. 출력 밴드는 팬크로매틱·열적외를 뺀 밴드(파장 순)
+2. **SfM 입력**: 기준 밴드를 흑색 수준·주변 감광·노출 보정 후 비행 전체 공통 배율로 늘이고(감마 0.5, CLAHE) 8비트 JPEG로 저장함
+   (`project/msref/<원래 이름>.jpg`). 내부표정은 메타데이터(초점거리·주점 mm × 초점면 해상도, 왜곡 k1·k2·k3·p1·p2 → COLMAP
+   FULL_OPENCV)를 쓰고 번들 조정에서 고정함. 정밀 보정(`refine()`)에서도 고정함
+3. **방사보정** (제조사 공개 모델):
+   L = V · R(y) · (p − p_BL) · a1 / (g · t_e · 2^N),  R(y) = 1 / (1 + a2·y/t_e − a3·y)
+   - p: 원시 값, p_BL: 흑색 수준, g: 이득(ISO/100), t_e: 노출(초), N: 비트 수, V: 주변 감광 보정(방사형 또는 2차원 다항식의 역수)
+   - 음수(잡음)는 자르지 않음 (어두운 물체의 평균이 치우치지 않게)
+4. **반사율**: ρ = π·L / E. E는 입사광 센서(DLS)의 수평 입사광을 시간 순 5캡처 이동 중앙값으로 다듬은 값.
+   DLS 단위 배율은 `IrradianceScaleToSIUnits`가 있으면 그 값, DLS2(`HorizontalIrradiance` 태그)는 0.01, 아니면 1.
+   패널 촬영이 있으면 밴드별 배율 k = albedo / ρ_패널(DLS)를 곱함 (`OrthoOptions.radiometry`, 아래 표)
+5. **밴드 카메라**: 기준 밴드 자세에 rig 회전(`Camera:RigRelatives`, Rx·Ry·Rz, 도)을 더한 카메라로 밴드마다 DSM에 직접 투영함.
+   밴드를 영상 평면에서 겹치지 않으므로 저고도·높은 물체의 시차도 DSM 정확도만큼 맞음.
+   `RigTranslations`(렌즈 위치 차)는 시험 비행(고도 21m)에서 적용하면 3~4화소 어긋나 기본으로 쓰지 않음
+6. **rig 미세 조정** (`bands` 단계): 캡처 10개에서 기준 밴드 영상을 현재 모델(rig + DSM)로 각 밴드 영상 좌표에 옮기고,
+   로그 경사도 크기를 ECC로 맞춰 남은 이동량을 잼. 중앙값을 밴드 카메라의 작은 회전으로 바꿔 적용하고 한 번 더 반복함.
+   마지막으로 4캡처에서 잔차만 재서 보고함 (`multispectral.radiometry.band_alignment`)
+7. **방사 블록 조정** (`OrthoOptions.ms_normalize`, 기본 켬): SfM 타이포인트(최대 2만 개)에서 캡처별 밴드 반사율(로그)을 읽고,
+   점 평균과의 차이를 캡처·밴드 이득으로 설명함. Tukey 반복 재가중으로 이상값(건물 옆면, 움직이는 물체)을 빼고,
+   관측이 적은 캡처는 이득 1 쪽으로 당김. 캡처 이득의 평균은 1로 고정해 DLS·패널로 정한 **전체 반사율 수준은 바꾸지 않음**.
+   구름·DLS 기울기로 생기는 캡처 경계 단차를 줄임
+8. **정사투영**: 심라인은 기준 밴드 카메라로 화소마다 한 번만 고르고, 모든 밴드를 그 영상에서 각자 카메라로 읽음
+   (지수가 서로 다른 촬영의 값으로 계산되지 않게). 모든 밴드가 있는 화소만 유효하고 나머지는 NaN.
+   출력 GSD는 출력 밴드의 원본 GSD × `gsd_scale`. 밝기·색 보정(`color`)은 하지 않음 (반사율을 바꾸지 않기 위해)
+9. **산출물**: `orthomosaic.tif`(반사율 float32 COG, 밴드 설명에 밴드 이름), `indices.tif`(NDVI·NDRE·GNDVI 중 계산 가능한 것),
+   `preview.png`(반사율 R·G·B, Blue가 없으면 NIR·Red·Green 위색, 1~99백분위 늘이기), `ndvi.png`(−0.2~0.9 갈색→초록)
+
+### 반사율 환산 방식 (`OrthoOptions.radiometry`)
+
+| 값 | 방식 | 쓰는 경우 |
+|---|---|---|
+| `"auto"` (기본) | DLS와 패널이 모두 있으면 `dls+panel`, DLS만 있으면 `dls`, 패널만 있으면 `panel`, 둘 다 없으면 `radiance` | 보통 |
+| `"dls+panel"` | DLS로 캡처마다 입사광 변화를 따라가고, 패널로 밴드별 수준을 맞춤 | 권장 (MicaSense 예제 데이터에서 DLS만 쓰면 패널 반사율이 실제의 0.64~2.2배) |
+| `"dls"` | ρ = π·L/E | 패널 촬영이 없을 때 |
+| `"panel"` | ρ = L · albedo / L_패널 | DLS가 없을 때. 비행 중 조도 변화는 반영하지 못함 |
+| `"radiance"` | 반사율로 바꾸지 않고 방사휘도(W/m²/sr/nm) | 자체 보정을 할 때. 블록 조정도 하지 않음 |
+
+- 패널 방식은 **모든 출력 밴드에 패널 정보가 있어야** 씀. 패널 촬영이 있어도 카메라가 일부 밴드에서 패널을 찾지 못하면
+  (예: MicaSense Altum 공개 예제의 Green) `auto`는 DLS가 있으면 `dls`, 없으면 `radiance`가 되고 보고서에 경고를 남김
+  (`radiometry.panel_missing_bands`). 방식을 직접 지정한 경우에는 경고하지 않음
+- 요청한 방식에 필요한 자료(DLS·패널)가 없으면 `InputError`(`invalid_argument`)
+
+### 한계
+
+- DJI Mavic 3M·P4 Multispectral 등 다른 제조사 형식은 아직 지원하지 않음
+- 열적외(LWIR) 밴드는 출력하지 않음
+- 정렬 결과의 카메라(`Project.cameras()`)·사진 좌표 변환은 기준 밴드 기준임. 사진 이름은 `msref`의 `<원래 이름>.jpg`이지만
+  `image_to_ground()`·GCP 표시에는 원래 TIFF 이름도 쓸 수 있음
+- 정렬 후 원본 밴드 폴더를 옮기면 정사 모자이크를 다시 만들 수 없음 (`image_dir_missing`). 정렬부터 다시 함
+

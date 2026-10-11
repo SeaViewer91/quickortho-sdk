@@ -355,6 +355,7 @@ def _render_tile(
 def finalize_cog(src_path: Path, cog_path: Path) -> None:
     """오버뷰를 만들고 Cloud Optimized GeoTIFF로 변환한다."""
     with rasterio.open(src_path, "r+") as ds:
+        is_float = ds.dtypes[0].startswith("float")
         factors = []
         f = 2
         while max(ds.width, ds.height) / f >= 256:
@@ -367,7 +368,7 @@ def finalize_cog(src_path: Path, cog_path: Path) -> None:
         cog_path,
         driver="COG",
         compress="deflate",
-        predictor=2,
+        predictor=3 if is_float else 2,
         blocksize=512,
         overviews="force_use_existing",
         BIGTIFF="IF_SAFER",

@@ -46,6 +46,9 @@ def _start(on_event: EventCallback | None, cancel: CancelToken | None):
     return make_emitter(on_event, cancel)
 
 
+RADIOMETRY_MODES = ("auto", "dls+panel", "dls", "panel", "radiance")
+
+
 def _check_options(opts: OrthoOptions) -> OrthoOptions:
     """옵션 값 검증. 잘못되면 InputError(invalid_argument)."""
     def bad(msg: str):
@@ -57,6 +60,8 @@ def _check_options(opts: OrthoOptions) -> OrthoOptions:
         bad("gsd_scale은 0보다 커야 함")
     if opts.cache_budget_mb is not None and opts.cache_budget_mb <= 0:
         bad("cache_budget_mb는 0보다 커야 함 (None이면 자동)")
+    if opts.radiometry not in RADIOMETRY_MODES:
+        bad(f"radiometry는 {', '.join(RADIOMETRY_MODES)} 중 하나여야 함: {opts.radiometry}")
     if opts.epsg is not None:
         from ._core.geo import crs_info
 
@@ -207,11 +212,11 @@ class Project:
     # ── 상태 ──
     @property
     def images(self) -> Path:
-        """영상 폴더."""
+        """영상 폴더. 다중분광이면 원본 밴드 TIFF 폴더."""
         if self._images is not None:
             return self._images
         if self._store.exists():
-            return self._store.image_dir
+            return self._store.source_dir
         raise ProjectError("영상 폴더를 알 수 없음. Project.create()로 만들어야 함", "not_aligned")
 
     @property
@@ -320,7 +325,10 @@ class Project:
                     for n in ("base_frame.json", "refined_frame.json", "refined"))
         if getattr(self, "_cam_cache", None) is None or self._cam_cache[0] != key:
             self._cam_cache = (key, self.cameras())
-        return self._cam_cache[1][image]
+        cams = self._cam_cache[1]
+        if image not in cams.names and image + ".jpg" in cams.names:
+            image = image + ".jpg"  # 다중분광: 기준 밴드 TIFF 이름으로도 찾음 (정렬은 8비트 변환본 이름)
+        return cams[image]
 
     def _dsm(self):
         from ._core.marking import load_dsm
@@ -331,7 +339,7 @@ class Project:
                                "not_rendered")
         return load_dsm(path)
 
-    def read_orthomosaic(self, *, scale: float = 1.0, bounds: Bounds | None = None, order: ChannelOrder = "RGBA"):
+    def read_orthomosaic(self, *, scale: float = 1.0, bounds: Bounds | None = None, order: ChannelOrder | None = None):
         """정사 모자이크를 ``(image, transform, crs)``로 읽음. :func:`quickortho.read_orthomosaic` 참고."""
         return read_orthomosaic(self.workspace, scale=scale, bounds=bounds, order=order)
 
@@ -373,7 +381,8 @@ class Project:
         """현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦.
 
         SfM을 다시 하지 않으므로 GSD만 바꿔 다시 만들 때 빠름. ``options``에서는 ``gsd_m``, ``gsd_scale``,
-        ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``, ``color_balance``를 씀.
+        ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``, ``color_balance``,
+        ``radiometry``, ``ms_normalize``를 씀.
         여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
 
         Raises:

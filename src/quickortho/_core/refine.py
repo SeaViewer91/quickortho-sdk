@@ -118,6 +118,8 @@ def resolve_marks(rec: pycolmap.Reconstruction, marks: list[dict]) -> list[tuple
     seen = set()
     for m in marks:
         im = rec.find_image_with_name(str(m["image"]))
+        if im is None:  # 다중분광: 기준 밴드 TIFF 이름으로 찍은 점 (정렬은 8비트 변환본 이름 '<원래 이름>.jpg')
+            im = rec.find_image_with_name(str(m["image"]) + ".jpg")
         if im is None or not im.has_pose or im.image_id in seen:
             continue
         seen.add(im.image_id)
@@ -305,15 +307,16 @@ def gcp_table(rec: pycolmap.Reconstruction, gcps: list[dict], frame: Frame) -> t
 
 
 def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
-    from .pipeline import PeakMemory, compose_report, render_products, saved_render_options
+    from .pipeline import PeakMemory, compose_report, ms_dataset_from_meta, render_products, saved_render_options
 
     t_start = time.perf_counter()
     proj = Project(ortho_dir)
     proj.require()
     meta = proj.meta()
-    image_dir = Path(meta["image_dir"])
+    image_dir = proj.image_dir
     if not image_dir.is_dir():
         raise InputError(f"원본 영상 폴더를 찾을 수 없음: {image_dir}", "image_dir_missing")
+    ms_ds = ms_dataset_from_meta(meta)  # 다중분광 원본 밴드 폴더도 보정 전에 확인 (보정 결과만 저장되고 실패하지 않게)
     gps = {k: tuple(v) for k, v in meta["gps"].items()}
     edits = proj.load_edits()
     base_report = proj.align_report()
@@ -384,7 +387,8 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                 s, R, t = umeyama(src, dst)
                 apply_sim3(rec, s, R, t)
                 gcp_pids = {add_point(rec, gcp_in_frame(g, frame), resolve_marks(rec, g["obs"])) for g in usable}
-                intr = refine_intrinsics_ok(rec, dst)
+                # 다중분광은 밴드 카메라가 메타데이터 내부표정을 전제로 하므로 기준 밴드 내부표정도 고정
+                intr = refine_intrinsics_ok(rec, dst) and not meta.get("multispectral")
                 bundle_adjust(rec, constant_points=gcp_pids, refine_intrinsics=intr)
                 if thr:
                     n2 = filter_large_errors(rec, float(thr), protect=protect | gcp_pids)
@@ -475,14 +479,15 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                     f"좌표계가 EPSG:{base_frame.epsg}에서 EPSG:{frame.epsg}로 바뀌어 저장된 정사 옵션 {', '.join(dropped)}를 "
                     "적용하지 않음. 새 좌표계 값으로 orthomosaic()을 다시 실행해야 함"
                 )
-        products = render_products(to_absolute(rec, frame), image_dir, proj.ortho_dir, frame.epsg, opts, out, timings)
+        products = render_products(to_absolute(rec, frame), image_dir, proj.ortho_dir, frame.epsg, opts, out, timings,
+                                   ms_ds)
         if note:
             # 바꾼 기본값만 저장한다 (좌표계 변경으로 적용하지 않은 bounds 등은 저장값을 지우지 않음)
             proj.update_render({**(meta.get("render") or {}), "gsd_scale": opts.gsd_scale,
                                 "cache_budget_mb": opts.cache_budget_mb}, __version__)
 
     timings["total_s"] = time.perf_counter() - t_start
-    render_t = {k: timings[k] for k in ("dsm_s", "color_s", "ortho_s", "finalize_s") if k in timings}
+    render_t = {k: timings[k] for k in ("dsm_s", "color_s", "bands_s", "ortho_s", "finalize_s") if k in timings}
     render_t["render_total_s"] = sum(render_t.values())
     if mode == "base":
         # 보정 취소: 보정 보고서를 지우고 정렬 결과로 다시 만든 정사 모자이크만 보고한다

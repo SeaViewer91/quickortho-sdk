@@ -19,7 +19,7 @@ image, transform, crs = qo.process("flight/", "out/")  # 여러 변수로 받기
 | `qo.scan(folder)` | `images, summary` | `list[dict]`, `dict` |
 | `qo.preview(folder, out)` / `project.preview()` | `quicklook, coverage, transform, crs` | `(H, W, 4)` uint8 또는 `None`, `(H, W)` uint16, `Affine`, `CRS` |
 | `project.align()` | `cameras, points, crs` | `Cameras`, `PointCloud`, `CRS` |
-| `project.orthomosaic()` / `project.process()` / `qo.process()` | `image, transform, crs` | `(H, W, 4)` uint8, `Affine`, `CRS` |
+| `project.orthomosaic()` / `project.process()` / `qo.process()` | `image, transform, crs` | `(H, W, 4)` uint8, `Affine`, `CRS`. 다중분광이면 `(H, W, 밴드)` float32 반사율 ([10절](#10-다중분광-반사율과-식생지수)) |
 | `project.refine()` | `image, transform, crs, gcps` | 위와 같음 + GCP 오차 표 `list[dict]` |
 | `project.points()` | `xyz, rgb` | `(N, 3)` float64, `(N, 3)` uint8 |
 
@@ -281,3 +281,30 @@ diff = np.abs(a[..., :3].astype(int) - b[..., :3].astype(int)).sum(axis=-1)
 
 `epsg`는 정렬 단계에서 정해지고, `bounds`·`grid_origin`·`gsd_m`은 정사 모자이크 단계에서 씀.
 절대 위치가 GPS 수준(수 m)이면 시기 사이에 그만큼 어긋나므로, 정밀한 비교에는 GCP 보정이 필요함.
+
+## 10. 다중분광: 반사율과 식생지수
+
+다중분광(MicaSense) 폴더를 처리하면 정사 모자이크가 밴드별 반사율이 됨. 풀면 `(H, W, 밴드)` float32이고
+자료 없는 곳은 NaN임. 밴드 순서는 `result.multispectral.bands`(또는 `qo.band_names(workspace)`)로 확인함.
+
+```python
+r = qo.Project.create("rededge_flight/", "out/").process()
+refl, transform, crs = r
+ms = r.multispectral
+print(ms.bands, ms.values, ms.radiometry)        # ['Blue', 'Green', 'Red', 'Red edge', 'NIR'] reflectance dls+panel
+red = refl[..., ms.bands.index("Red")]
+nir = refl[..., ms.bands.index("NIR")]
+with np.errstate(invalid="ignore", divide="ignore"):
+    ndvi = (nir - red) / (nir + red)             # NaN은 그대로 전파됨
+
+# 미리 만든 식생지수 (NDVI·NDRE·GNDVI 중 계산 가능한 것)
+ndvi2, _, _ = ms.read_indices("NDVI")            # 또는 qo.read_indices("out/", "NDVI")
+all_idx, _, _ = qo.read_indices("out/")          # (H, W, 지수), 이름은 ms.index_names
+```
+
+- 통계는 NaN을 빼고 냄 (`np.nanmean`, `np.nanpercentile`). rasterio로 직접 읽어도 nodata가 NaN으로 설정되어 있음
+- 반사율은 대략 0~1이지만 매우 어두운 곳은 잡음으로 음수가 될 수 있음 (자르지 않음). 표시할 때만 `np.clip`
+- 구역별 평균(예: 필지 폴리곤): `rasterio.features.geometry_mask`로 마스크를 만들어 `np.nanmean(ndvi[mask])`
+- 밴드 정합 잔차·캡처 간 반사율 불일치는 `ms.band_alignment_px`, `ms.capture_inconsistency_pct`로 확인함
+- 원본 밴드 영상 한 장의 방사보정만 필요하면 `quickortho.multispectral` 모듈을 씀 ([API 레퍼런스](api-reference.md#quickorthomultispectral-모듈))
+

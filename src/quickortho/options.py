@@ -62,6 +62,12 @@ class OrthoOptions:
             외부 DEM(해발고)과 GPS 고도(타원체고 등)의 기준 차이를 중앙값 차이만큼 보정함.
         color_balance: (정사) 영상 간 밝기·색 차이 보정. 노출·지면 반사 차이로 심라인 이음매에 생기는
             밝기 단차를 영상별 완만한 이득 곡면으로 없앰. 세부 질감은 바꾸지 않음. 영상이 1장이면 하지 않음.
+            다중분광 영상에는 쓰지 않음 (반사율을 바꾸지 않기 위해).
+        radiometry: (정사, 다중분광) 반사율 환산 방식. ``"auto"``(있는 자료로 최선: DLS와 패널이 모두 있으면
+            ``"dls+panel"``), ``"dls+panel"``, ``"dls"``(입사광 센서), ``"panel"``(반사판 촬영),
+            ``"radiance"``(반사율로 바꾸지 않고 방사휘도 W/m²/sr/nm). RGB 영상에는 영향 없음.
+        ms_normalize: (정사, 다중분광) 캡처 간 반사율 블록 조정. 같은 지점을 본 캡처끼리 반사율이 같아지도록
+            캡처·밴드별 이득을 구함. 전체 반사율 수준(평균 이득 1)은 바꾸지 않음. ``radiance``에서는 하지 않음.
     """
 
     gsd_m: float | None = None
@@ -76,6 +82,8 @@ class OrthoOptions:
     dsm_z: Optional[float] = None
     dsm_vertical_align: bool = True
     color_balance: bool = True
+    radiometry: str = "auto"
+    ms_normalize: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -88,7 +96,7 @@ class OrthoOptions:
             "gsd_m": self.gsd_m, "gsd_scale": self.gsd_scale, "cache_budget_mb": self.cache_budget_mb,
             "bounds": list(self.bounds) if self.bounds else None, "grid_origin": list(self.grid_origin),
             "dsm": str(self.dsm), "dsm_z": self.dsm_z, "dsm_vertical_align": self.dsm_vertical_align,
-            "color_balance": self.color_balance,
+            "color_balance": self.color_balance, "radiometry": self.radiometry, "ms_normalize": self.ms_normalize,
         }
 
     @classmethod

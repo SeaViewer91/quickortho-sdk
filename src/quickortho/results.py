@@ -49,6 +49,10 @@ class ScanResult:
         excluded_cameras: 자동 제외한 카메라와 사유 (예: 망원 카메라).
         failed: 읽기 실패한 파일과 오류 메시지.
         raw: 원본 dict.
+        multispectral: 다중분광 영상 폴더이면 요약 (``model``, ``bands``(이름·파장), ``reference_band``,
+            ``captures``, ``panel_captures``, ``incomplete_captures``, ``has_dls``). RGB 폴더면 ``None``.
+            다중분광 폴더의 ``images``에는 밴드 영상이 모두 들어가며 ``band``·``capture`` 키가 있고,
+            정렬에 쓰는 기준 밴드만 ``selected``임.
     """
 
     folder: Path
@@ -58,6 +62,7 @@ class ScanResult:
     excluded_cameras: dict[str, str]
     failed: list[dict[str, str]]
     raw: dict[str, Any] = field(repr=False)
+    multispectral: Optional[dict[str, Any]] = None
 
     def __iter__(self) -> Iterator[Any]:
         yield self.images
@@ -94,6 +99,7 @@ class ScanResult:
             excluded_cameras=d.get("excluded_cameras", {}),
             failed=d.get("failed", []),
             raw=d,
+            multispectral=d.get("multispectral"),
         )
 
 
@@ -317,15 +323,87 @@ class AlignResult:
 
 
 @dataclass(frozen=True)
+class MultispectralInfo:
+    """다중분광 정사 모자이크 정보 (:attr:`OrthoResult.multispectral`).
+
+    Attributes:
+        model: 카메라 기종 (예: ``"MicaSense RedEdge-P"``).
+        bands: 정사 모자이크의 밴드 이름 (파장 순, 팬크로매틱·열적외 제외). 배열의 마지막 축 순서와 같음.
+        wavelengths_nm: 밴드 중심 파장(nm). 모르면 ``None``.
+        reference_band: 정렬(SfM)에 쓴 기준 밴드 이름.
+        values: ``"reflectance"``(반사율, 0~1 부근) 또는 ``"radiance"``(방사휘도 W/m²/sr/nm).
+        radiometry: 반사율 환산 방식 (``"dls+panel"``, ``"dls"``, ``"panel"``, ``"radiance"``).
+        indices: 식생지수 GeoTIFF 경로 (NIR·Red 등 필요한 밴드가 없으면 ``None``).
+        index_names: ``indices`` 파일의 지수 이름 (예: ``["NDVI", "NDRE", "GNDVI"]``).
+        index_preview: NDVI 컬러 미리보기 PNG 경로.
+        band_alignment_px: 밴드별 정합 잔차(화소, rig 미세 조정 후 남은 이동량의 크기).
+        capture_inconsistency_pct: 밴드별 캡처 간 반사율 불일치(%) ``(보정 전, 보정 후)``. 블록 조정을 안 했으면 ``None``.
+        report: 보고서의 ``multispectral`` 항목 전체.
+    """
+
+    model: str
+    bands: list[str]
+    wavelengths_nm: list[Optional[float]]
+    reference_band: str
+    values: str
+    radiometry: str
+    indices: Optional[Path]
+    index_names: list[str]
+    index_preview: Optional[Path]
+    band_alignment_px: dict[str, float]
+    capture_inconsistency_pct: Optional[dict[str, tuple[float, float]]]
+    report: dict[str, Any] = field(repr=False)
+
+    def read_indices(self, index: Optional[str] = None, *, scale: float = 1.0, bounds: Optional[Bounds] = None):
+        """식생지수를 ``(array, transform, crs)``로 읽음. :func:`quickortho.read_indices` 참고."""
+        from .geodata import read_indices
+
+        if self.indices is None:
+            from .errors import ProjectError
+
+            raise ProjectError("식생지수 파일이 없음 (NIR·Red 등 필요한 밴드가 없음)", "not_rendered")
+        return read_indices(self.indices, index, scale=scale, bounds=bounds)
+
+    @staticmethod
+    def from_report(report: dict[str, Any]) -> Optional["MultispectralInfo"]:
+        m = report.get("multispectral")
+        if not m:
+            return None
+        o = report.get("outputs", {})
+        rad = m.get("radiometry", {})
+        resid = (rad.get("band_alignment") or {}).get("residual") or {}
+        norm = rad.get("capture_normalization") or {}
+        incons = None
+        if norm.get("applied"):
+            incons = {b: (v["inconsistency_before_pct"], v["inconsistency_after_pct"])
+                      for b, v in norm.get("bands", {}).items()}
+        return MultispectralInfo(
+            model=m.get("model", ""),
+            bands=[b["name"] for b in m.get("bands", [])],
+            wavelengths_nm=[b.get("wavelength_nm") for b in m.get("bands", [])],
+            reference_band=m.get("reference_band", ""),
+            values=m.get("values", "reflectance"),
+            radiometry=rad.get("mode", ""),
+            indices=Path(o["indices"]) if o.get("indices") else None,
+            index_names=list(m.get("indices", [])),
+            index_preview=Path(o["index_preview"]) if o.get("index_preview") else None,
+            band_alignment_px={b: float(np.hypot(*v["shift_px"])) for b, v in resid.items()},
+            capture_inconsistency_pct=incons,
+            report=m,
+        )
+
+
+@dataclass(frozen=True)
 class OrthoResult:
     """정사 모자이크 결과 (:meth:`quickortho.Project.orthomosaic`, :meth:`~quickortho.Project.process`).
     풀면 ``image, transform, crs``.
 
-    ``image``는 정사 모자이크 전체를 ``(H, W, 4)`` uint8 RGBA로 읽은 배열임. 결과가 크면 메모리를 많이 쓰므로
+    ``image``는 정사 모자이크 전체를 ``(H, W, 4)`` uint8 RGBA로 읽은 배열임. 다중분광이면 ``(H, W, 밴드)`` float32
+    반사율이고 자료 없는 곳은 NaN임 (밴드 순서는 ``multispectral.bands``). 결과가 크면 메모리를 많이 쓰므로
     ``read(scale=0.25)``나 ``read(bounds=...)``로 필요한 만큼만 읽는 것을 권장함.
 
     Attributes:
-        orthomosaic: 정사 모자이크 GeoTIFF(COG, RGBA) 경로.
+        orthomosaic: 정사 모자이크 GeoTIFF(COG) 경로. RGB는 RGBA uint8, 다중분광은 밴드별 float32(nodata NaN).
         dsm: 간이 DSM GeoTIFF(float32) 경로.
         preview: 긴 변 2048px 미리보기 PNG 경로.
         report_path: ``report.json`` 경로.
@@ -337,6 +415,8 @@ class OrthoResult:
         refined: 정밀 보정 결과로 만든 모자이크인지 여부.
         warnings: 경고 문장 목록.
         report: 처리 보고서 전체 (``report.json``과 같음).
+        multispectral: 다중분광 결과이면 :class:`MultispectralInfo` (밴드, 반사율 방식, 지수 경로, 정합·불일치 통계).
+            RGB 결과면 ``None``.
     """
 
     orthomosaic: Path
@@ -351,6 +431,7 @@ class OrthoResult:
     refined: bool
     warnings: list[str]
     report: dict[str, Any] = field(repr=False)
+    multispectral: Optional[MultispectralInfo] = None
 
     def __iter__(self) -> Iterator[Any]:
         image, transform, crs = self.read()
@@ -391,7 +472,7 @@ class OrthoResult:
         """결과 범위 (xmin, ymin, xmax, ymax), 지도 좌표."""
         return self._header[2]
 
-    def read(self, *, scale: float = 1.0, bounds: Optional[Bounds] = None, order: ChannelOrder = "RGBA"):
+    def read(self, *, scale: float = 1.0, bounds: Optional[Bounds] = None, order: Optional[ChannelOrder] = None):
         """정사 모자이크를 ``(image, transform, crs)``로 읽음. :func:`quickortho.read_orthomosaic` 참고."""
         from .geodata import read_orthomosaic
 
@@ -419,6 +500,7 @@ class OrthoResult:
             refined="refine" in report,
             warnings=list(report.get("warnings", [])),
             report=report,
+            multispectral=MultispectralInfo.from_report(report),
         )
 
 
@@ -479,4 +561,4 @@ class RefineResult:
         )
 
 
-__all__ = ["ScanResult", "PreviewResult", "AlignResult", "OrthoResult", "RefineResult"]
+__all__ = ["ScanResult", "PreviewResult", "AlignResult", "OrthoResult", "RefineResult", "MultispectralInfo"]

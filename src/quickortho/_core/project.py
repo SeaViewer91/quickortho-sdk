@@ -80,6 +80,7 @@ class Project:
         gps: dict[str, tuple[float, float, float]],
         engine_version: str,
         render: dict | None = None,
+        ms_source: Path | None = None,
     ) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         meta = {
@@ -88,6 +89,8 @@ class Project:
             "engine_version": engine_version,
             "render": render or {},
         }
+        if ms_source is not None:
+            meta["multispectral"] = {"source_dir": str(Path(ms_source).resolve())}
         (self.dir / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
 
     def meta(self) -> dict:
@@ -95,7 +98,25 @@ class Project:
 
     @property
     def image_dir(self) -> Path:
-        return Path(self.meta()["image_dir"])
+        """정렬·정사투영에 쓴 영상 폴더. 다중분광이면 기준 밴드 8비트 영상 폴더(project/msref).
+
+        msref는 워크스페이스 안에 있으므로 저장된 절대 경로 대신 현재 위치 기준으로 돌려준다 (워크스페이스를 옮겨도 동작).
+        """
+        meta = self.meta()
+        if meta.get("multispectral"):
+            return self.dir / "msref"
+        return Path(meta["image_dir"])
+
+    @property
+    def source_dir(self) -> Path:
+        """사용자가 준 원본 영상 폴더. 다중분광이면 밴드 TIFF 폴더, 아니면 image_dir와 같음."""
+        meta = self.meta()
+        ms = meta.get("multispectral")
+        return Path(ms["source_dir"] if ms else meta["image_dir"])
+
+    @property
+    def is_multispectral(self) -> bool:
+        return bool(self.meta().get("multispectral"))
 
     # ── 재구성 ──
     def _save_rec(self, name: str, rec_local: pycolmap.Reconstruction, frame: Frame) -> None:

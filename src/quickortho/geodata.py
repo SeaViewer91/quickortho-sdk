@@ -52,7 +52,8 @@ def read_raster(
     Args:
         path: GeoTIFF 경로.
         scale: 읽을 배율 (0 < scale ≤ 1). 0.25면 가로세로 1/4. COG 오버뷰를 쓰므로 빠름.
-        bounds: 지도 좌표 범위 ``(xmin, ymin, xmax, ymax)``만 읽음. 결과 범위를 벗어난 부분은 0으로 채움.
+        bounds: 지도 좌표 범위 ``(xmin, ymin, xmax, ymax)``만 읽음. 결과 범위를 벗어난 부분은 nodata(없으면 0)로 채움.
+            float 래스터(다중분광 반사율·지수)의 nodata는 NaN임.
         channels_last: ``True``면 ``(H, W, 밴드)``, ``False``면 rasterio처럼 ``(밴드, H, W)``. 밴드가 1개면 항상 ``(H, W)``.
 
     Returns:
@@ -74,8 +75,9 @@ def read_raster(
             win = rasterio.windows.Window(0, 0, ds.width, ds.height)
         out_h = max(1, int(round(win.height * scale)))
         out_w = max(1, int(round(win.width * scale)))
+        fill = ds.nodata if ds.nodata is not None else 0
         data = ds.read(window=win, out_shape=(ds.count, out_h, out_w), boundless=bounds is not None,
-                       fill_value=0, resampling=Resampling.average if scale < 1 else Resampling.nearest)
+                       fill_value=fill, resampling=Resampling.average if scale < 1 else Resampling.nearest)
         tf = ds.window_transform(win) * Affine.scale(win.width / out_w, win.height / out_h)
         crs = CRS.from_user_input(ds.crs.to_wkt())
     if data.shape[0] == 1:
@@ -99,7 +101,7 @@ def read_orthomosaic(
     *,
     scale: float = 1.0,
     bounds: Optional[Bounds] = None,
-    order: ChannelOrder = "RGBA",
+    order: Optional[ChannelOrder] = None,
 ) -> tuple[np.ndarray, Affine, CRS]:
     """정사 모자이크를 ``(image, transform, crs)``로 읽음.
 
@@ -107,15 +109,74 @@ def read_orthomosaic(
         target: 워크스페이스 폴더 또는 ``orthomosaic.tif`` 경로.
         scale: 읽을 배율 (0 < scale ≤ 1).
         bounds: 지도 좌표 범위만 읽음 ``(xmin, ymin, xmax, ymax)``.
-        order: 채널 순서. OpenCV에 넘길 때는 ``"BGR"`` 또는 ``"BGRA"``.
+        order: (RGB 결과) 채널 순서. 기본 ``"RGBA"``. OpenCV에 넘길 때는 ``"BGR"`` 또는 ``"BGRA"``.
+            다중분광 결과에는 쓸 수 없음 (밴드 순서는 :func:`band_names`).
 
     Returns:
-        image: ``(H, W, C)`` uint8. RGBA면 알파 0이 자료 없음.
+        image: RGB 결과는 ``(H, W, C)`` uint8 (RGBA면 알파 0이 자료 없음).
+            다중분광 결과는 ``(H, W, 밴드)`` float32 반사율(또는 방사휘도), 자료 없는 곳은 NaN.
         transform: 화소(열, 행) → 지도(x, y) 변환. ``x, y = transform * (col, row)``
         crs: 좌표계
     """
-    arr, tf, crs = read_raster(_resolve_raster(target, "orthomosaic.tif"), scale=scale, bounds=bounds)
-    return _reorder(arr, order), tf, crs
+    path = _resolve_raster(target, "orthomosaic.tif")
+    arr, tf, crs = read_raster(path, scale=scale, bounds=bounds)
+    if arr.dtype.kind == "f":  # 다중분광 반사율
+        if order is not None:
+            raise InputError("다중분광 정사 모자이크에는 order를 쓸 수 없음 (밴드 순서는 band_names()로 확인)",
+                             "invalid_argument")
+        return (arr[..., None] if arr.ndim == 2 else arr), tf, crs
+    return _reorder(arr, order or "RGBA"), tf, crs
+
+
+def band_names(target: str | Path) -> list[str]:
+    """GeoTIFF의 밴드 이름 목록 (다중분광 정사 모자이크·지수 파일은 밴드 설명에 이름을 넣어 둠).
+
+    target: 워크스페이스 폴더(``orthomosaic.tif``를 읽음) 또는 GeoTIFF 경로. 이름이 없는 밴드는 ``"band<번호>"``.
+    """
+    import rasterio
+
+    p = Path(target).expanduser()
+    if p.is_dir():
+        p = _resolve_raster(p, "orthomosaic.tif")
+    elif not p.exists():
+        raise InputError(f"파일이 없음: {p}", "file_not_found")
+    with rasterio.open(p) as ds:
+        return [d or f"band{i}" for i, d in enumerate(ds.descriptions, 1)]
+
+
+def read_indices(
+    target: str | Path,
+    index: Optional[str] = None,
+    *,
+    scale: float = 1.0,
+    bounds: Optional[Bounds] = None,
+) -> tuple[np.ndarray, Affine, CRS]:
+    """다중분광 식생지수(``indices.tif``)를 ``(array, transform, crs)``로 읽음.
+
+    Args:
+        target: 워크스페이스 폴더 또는 ``indices.tif`` 경로.
+        index: ``"NDVI"``, ``"NDRE"``, ``"GNDVI"`` 중 하나만 읽으면 ``(H, W)``. 없으면 모든 지수 ``(H, W, 지수)``
+            (순서는 :func:`band_names`). 대소문자 구분 없음.
+
+    Raises:
+        ProjectError: 지수 파일이 없음 (``not_rendered``: RGB 결과이거나 NIR·Red 등 필요한 밴드가 없음).
+        InputError: 없는 지수 이름 (``invalid_argument``).
+    """
+    p = Path(target).expanduser()
+    if p.is_dir():
+        p = p / "indices.tif"
+    if not p.exists():
+        raise ProjectError(f"식생지수 파일이 없음: {p}. 다중분광 결과에서 NIR·Red 등 필요한 밴드가 있을 때만 만듦",
+                           "not_rendered")
+    arr, tf, crs = read_raster(p, scale=scale, bounds=bounds)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    if index is None:
+        return arr, tf, crs
+    names = [n.upper() for n in band_names(p)]
+    if index.upper() not in names:
+        raise InputError(f"지수 {index}가 없음 (있는 지수: {', '.join(names)})", "invalid_argument")
+    return np.ascontiguousarray(arr[..., names.index(index.upper())]), tf, crs
 
 
 def read_dsm(
@@ -418,6 +479,6 @@ def points_from_reconstruction(rec, origin: Sequence[float], epsg: int) -> Point
 
 
 __all__ = [
-    "read_raster", "read_orthomosaic", "read_dsm",
+    "read_raster", "read_orthomosaic", "read_dsm", "read_indices", "band_names",
     "CameraPose", "Cameras", "PointCloud", "rotation_from_opk",
 ]

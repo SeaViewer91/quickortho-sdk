@@ -31,10 +31,21 @@ from .errors import (  # noqa: E402
 from .doctor import run_doctor as doctor
 from .events import STAGES, CancelToken, Event, EventCallback, print_progress
 from .gcp import GCP, Mark, TiePoint, load_gcps, read_gcp_file
-from .geodata import CameraPose, Cameras, PointCloud, read_dsm, read_orthomosaic, read_raster, rotation_from_opk
+from .geodata import (
+    CameraPose,
+    Cameras,
+    PointCloud,
+    band_names,
+    read_dsm,
+    read_indices,
+    read_orthomosaic,
+    read_raster,
+    rotation_from_opk,
+)
 from .options import OrthoOptions, PreviewOptions, SfmOptions
 from .project import Project, preview, process, scan
-from .results import AlignResult, OrthoResult, PreviewResult, RefineResult, ScanResult
+from .results import AlignResult, MultispectralInfo, OrthoResult, PreviewResult, RefineResult, ScanResult
+from . import multispectral  # noqa: E402  (qo.multispectral: 방사보정만 쓰는 경우)
 
 __all__ = [
     "__version__",
@@ -54,6 +65,8 @@ __all__ = [
     "read_orthomosaic",
     "read_dsm",
     "read_raster",
+    "read_indices",
+    "band_names",
     "rotation_from_opk",
     # 결과
     "ScanResult",
@@ -61,6 +74,9 @@ __all__ = [
     "AlignResult",
     "OrthoResult",
     "RefineResult",
+    "MultispectralInfo",
+    # 다중분광 (모듈)
+    "multispectral",
     # 진행·중단
     "Event",
     "EventCallback",

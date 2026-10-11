@@ -1,12 +1,12 @@
 # QuickOrtho SDK 문서
 
-대상 버전: 0.3.1
+대상 버전: 0.4.0
 
 ## 처음 쓰는 경우
 
 1. [설치](installation.md): 요구 사항, 설치·업그레이드, 오프라인 설치, OS별 주의 사항
 2. [빠른 시작](quickstart.md): 영상 폴더 하나로 정사 모자이크 만들기
-3. [핵심 개념](concepts.md): 워크스페이스, 처리 단계, 좌표계, 정확도
+3. [핵심 개념](concepts.md): 워크스페이스, 처리 단계, 좌표계, 정확도, 다중분광
 
 ## 개발할 때
 
@@ -38,9 +38,11 @@
 | `04_thread_cancel.py` | 별도 스레드 처리, 진행률 큐, Ctrl+C 중단 |
 | `05_serve_client.py` | serve 프로세스 클라이언트, 즉시 중단 |
 | `06_batch_folders.py` | 여러 폴더 일괄 처리, 결과 CSV |
+| `07_multispectral.py` | 다중분광 폴더 → 반사율·NDVI, 정합·불일치 확인 |
 
 ## 릴리스 노트
 
+- [v0.4.0](release-notes/v0.4.0.md)
 - [v0.3.1](release-notes/v0.3.1.md)
 - [v0.3.0](release-notes/v0.3.0.md)
 - [v0.2.1](release-notes/v0.2.1.md)
