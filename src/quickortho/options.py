@@ -71,6 +71,9 @@ class OrthoOptions:
         indices: (정사, 다중분광) 만들 식생·수분 지수 이름 목록 (대소문자 무관). ``None``이면 기본값
             ``["NDVI", "NDRE", "GNDVI"]``, ``[]``이면 만들지 않음. 쓸 수 있는 이름은 :data:`quickortho.indices.INDEX_DEFS`
             (NDVI, NDRE, GNDVI, NDWI, OSAVI, SAVI, EVI, CIre, CIg). 카메라 밴드로 계산할 수 없는 지수는 건너뛰고 보고서에 남김.
+        water: (정렬·정사) 바다·호수 수면 처리. ``"auto"``(영상 면적 중 수면 비율 평균이 5% 이상이면 켬), ``"on"``, ``"off"``.
+            켜면 정렬에서 넓은 수면 안쪽의 특징점을 빼고, 정사에서 간이 DSM의 수면 칸을 물가 높이의 평면으로 덮음.
+            ``"off"``는 0.4.x와 같은 결과. 다중분광에는 쓰지 않음. 희소 점군 DSM(``dsm="sparse"``)에만 평면을 적용함.
     """
 
     gsd_m: float | None = None
@@ -88,6 +91,7 @@ class OrthoOptions:
     radiometry: str = "auto"
     ms_normalize: bool = True
     indices: Optional[list[str]] = None
+    water: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -102,6 +106,7 @@ class OrthoOptions:
             "dsm": str(self.dsm), "dsm_z": self.dsm_z, "dsm_vertical_align": self.dsm_vertical_align,
             "color_balance": self.color_balance, "radiometry": self.radiometry, "ms_normalize": self.ms_normalize,
             "indices": list(self.indices) if self.indices is not None else None,
+            "water": self.water,
         }
 
     @classmethod

@@ -126,6 +126,7 @@ quickortho ortho flight_0925 -o out | tail -n 1 | jq '.data.outputs.orthomosaic'
 | `--no-color-balance` | 끔 | ortho, render | 영상 간 밝기·색 보정 끄기 (기본은 보정함) |
 | `--radiometry` | auto | ortho, render | (다중분광) 반사율 환산 방식: `auto`, `dls+panel`, `dls`, `panel`, `radiance` |
 | `--no-ms-normalize` | 끔 | ortho, render | (다중분광) 캡처 간 반사율 블록 조정 끄기 |
+| `--water` | auto | ortho, align, render | 바다·호수 수면 처리: `auto`(영상 면적의 5% 이상이 수면이면 켬), `on`, `off`. align은 수면 판별·특징점 제외, render는 DSM 수면 평면 |
 | `--indices` | NDVI,NDRE,GNDVI | ortho, render | (다중분광) 만들 지수, 쉼표로 구분 (대소문자 무관). `none`이면 만들지 않음. RGB 영상에는 쓰지 않음 |
 
 `indices`: `--indices NDVI,NDWI`로 고른 지수만 다시 만들고 고르지 않은 지수 파일은 지움. `--indices none`이면 지수 파일을 모두 지움.
@@ -158,6 +159,9 @@ quickortho ortho /data/flight -o /data/flight_out --max-image-size 3200 --max-fe
 
 # 국내 좌표계, 고정 격자 (시기별 비교용)
 quickortho ortho /data/flight -o /data/out_0925 --epsg 5186 --gsd 0.05 --bounds 204000 336000 204600 336500
+
+# 해안 비행: 수면 처리를 강제로 켬 (기본 auto는 수면이 영상 면적의 5% 이상일 때만)
+quickortho ortho /data/coast -o /data/coast_out --water on
 
 # 수면 위주 영상: 해수면 높이 평면으로 정사투영
 quickortho render /data/flight_out --dsm plane --dsm-z 0
@@ -223,7 +227,7 @@ while (p.StandardOutput.ReadLine() is { } line) {
 ```text
 호출 측                                     serve 프로세스
    │  (프로세스 시작)                              │
-   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.4.1","warmup_s":1.2}
+   │ ◀──── {"type":"ready","ok":true,"protocol":1,"version":"0.5.0","warmup_s":1.2}
    │ ───▶ {"job":1,"argv":["ortho","/data/a","-o","/data/a_out"]}
    │ ◀──── {"job":1,"type":"stage",...}
    │ ◀──── {"job":1,"type":"progress",...}

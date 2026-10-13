@@ -77,6 +77,10 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--indices", default=None,
                        help="다중분광 지수, 쉼표로 구분 (예: NDVI,NDRE). none이면 만들지 않음. 기본 NDVI,NDRE,GNDVI")
 
+    def add_water(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--water", choices=["auto", "on", "off"], default="auto",
+                       help="수면 처리: 수면 특징점 제외, DSM 수면 평면 (기본 auto: 영상 면적의 5%% 이상이 수면이면 켬)")
+
     def add_epsg(p: argparse.ArgumentParser) -> None:
         p.add_argument("--epsg", type=int, default=None, help="결과 좌표계 EPSG (투영 좌표계, 기본 UTM)")
 
@@ -84,18 +88,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ortho.add_argument("folder", type=Path, help="영상 폴더")
     p_ortho.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
     add_render(p_ortho)
+    add_water(p_ortho)
     add_sfm(p_ortho)
     add_epsg(p_ortho)
 
     p_align = sub.add_parser("align", help="정렬만 실행 (스캔 → SfM → GPS 좌표 정렬)")
     p_align.add_argument("folder", type=Path, help="영상 폴더")
     p_align.add_argument("-o", "--output", type=Path, required=True, help="워크스페이스(결과 폴더)")
+    add_water(p_align)
     add_sfm(p_align)
     add_epsg(p_align)
 
     p_render = sub.add_parser("render", help="정렬된 워크스페이스로 정사 모자이크만 다시 생성")
     p_render.add_argument("ortho_dir", type=Path, help="워크스페이스")
     add_render(p_render)
+    add_water(p_render)
 
     p_idx = sub.add_parser("indices", help="다중분광 정사 모자이크에서 지수만 다시 생성 (정렬·정사 생략)")
     p_idx.add_argument("ortho_dir", type=Path, help="워크스페이스")
@@ -174,6 +181,7 @@ def _options(args: argparse.Namespace):
         radiometry=getattr(args, "radiometry", "auto"),
         ms_normalize=not getattr(args, "no_ms_normalize", False),
         indices=_parse_indices(getattr(args, "indices", None)),
+        water=getattr(args, "water", "auto"),
     )
 
 

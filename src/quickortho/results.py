@@ -275,6 +275,11 @@ class AlignResult:
     raw: dict[str, Any] = field(repr=False)
     workspace: Optional[Path] = field(default=None, repr=False)
 
+    @property
+    def water(self) -> Optional["WaterInfo"]:
+        """정렬 전 수면 판별 결과 (수면 비율, 특징점을 뺀 영상 수). 판별하지 않았으면(off, 다중분광) ``None``."""
+        return WaterInfo.from_report(self.raw)
+
     def __iter__(self) -> Iterator[Any]:
         yield self.cameras
         yield self.points
@@ -421,6 +426,64 @@ class MultispectralInfo:
 
 
 @dataclass(frozen=True)
+class WaterInfo:
+    """바다·호수 수면 처리 정보 (:attr:`OrthoResult.water`, :attr:`AlignResult.water`). 0.5.0부터.
+
+    Attributes:
+        mode: 요청한 방식 (``"auto"``, ``"on"``, ``"off"``).
+        active: 수면 처리를 했는지. 정사 결과에서는 DSM 수면 평면을 적용하려 했는지(수면으로 확정한 곳이 없을 수도 있음).
+        source: 수면 마스크 출처. ``"auto"``(SDK 판별) 또는 ``"user"``(:meth:`Project.set_water_masks`). 판별하지 않았으면 ``None``.
+        image_fraction: 영상 면적 중 수면 비율 평균 (0~1). ``"auto"``는 0.05 이상이면 켬.
+        images_with_water: 수면이 영상의 1% 넘게 보이는 영상 수.
+        feature_masked_images: 정렬에서 특징점을 뺀(넓은 수면이 있는) 영상 수.
+        area_m2: DSM에서 평면으로 덮은 수면 면적(m²).
+        levels_m: 수면 높이(m, 결과 좌표계 높이 기준). 수면 덩어리마다 하나.
+        components: 수면 후보 덩어리별 판정 (``area_m2``, ``point_ratio``, ``shore_points``, ``inner_points``,
+            ``raised_m``, ``shore_drop_m``, ``level_m``, ``water``). 넓은 순 최대 10개.
+        report: 보고서의 ``water`` 항목 전체.
+    """
+
+    mode: str
+    active: bool
+    source: Optional[str]
+    image_fraction: Optional[float]
+    images_with_water: Optional[int]
+    feature_masked_images: int
+    area_m2: float
+    levels_m: list[float]
+    components: list[dict[str, Any]]
+    report: dict[str, Any] = field(repr=False)
+
+    @property
+    def applied(self) -> bool:
+        """DSM의 수면을 실제로 평면으로 덮었는지 (``area_m2 > 0``)."""
+        return self.area_m2 > 0
+
+    @staticmethod
+    def from_report(report: dict[str, Any]) -> Optional["WaterInfo"]:
+        w = report.get("water")
+        if not isinstance(w, dict):
+            return None
+        detail = list(w.get("detail", []))
+        levels = w.get("levels_m")  # SDK 보고서에만 있음 (모든 수면 덩어리). 없으면 detail(넓은 10개)에서
+        if levels is None:
+            levels = [c["level_m"] for c in detail if c.get("water") and c.get("level_m") is not None]
+        levels = sorted({float(x) for x in levels})
+        return WaterInfo(
+            mode=w.get("mode", "off"),
+            active=bool(w.get("active", False)),
+            source=w.get("source"),
+            image_fraction=w.get("image_fraction"),
+            images_with_water=w.get("images_with_water"),
+            feature_masked_images=int(w.get("feature_masked_images", 0) or 0),
+            area_m2=float(w.get("area_m2", 0.0) or 0.0),
+            levels_m=levels,
+            components=detail,
+            report=w,
+        )
+
+
+@dataclass(frozen=True)
 class OrthoResult:
     """정사 모자이크 결과 (:meth:`quickortho.Project.orthomosaic`, :meth:`~quickortho.Project.process`).
     풀면 ``image, transform, crs``.
@@ -465,6 +528,11 @@ class OrthoResult:
         yield image
         yield transform
         yield crs
+
+    @property
+    def water(self) -> Optional[WaterInfo]:
+        """수면 처리 정보 (:class:`WaterInfo`). 0.5.0 전 결과·다중분광이면 ``None``."""
+        return WaterInfo.from_report(self.report)
 
     @property
     def indices(self) -> dict[str, Path]:

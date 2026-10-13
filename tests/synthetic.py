@@ -36,9 +36,11 @@ class Scene:
     cameras: dict[str, tuple[float, float, float]]  # 파일명 → 카메라 중심 (지역 E, N, Z)
     rotations: dict[str, np.ndarray]  # 파일명 → R (카메라 좌표 → 지역 좌표)
     origin: tuple[float, float]  # 지역 좌표 원점의 UTM (E, N)
+    sea_e: float | None = None  # 바다 장면: e < sea_e가 바다 (수면 높이 SEA_Z)
 
     def height(self, e, n):
-        return terrain(np.asarray(e, dtype=np.float64), np.asarray(n, dtype=np.float64))
+        e, n = np.asarray(e, dtype=np.float64), np.asarray(n, dtype=np.float64)
+        return terrain(e, n) if self.sea_e is None else terrain_sea(e, n, self.sea_e)
 
     def project(self, name: str, e: float, n: float, z: float) -> tuple[float, float] | None:
         c = np.array(self.cameras[name])
@@ -60,6 +62,28 @@ def terrain(e: np.ndarray, n: np.ndarray) -> np.ndarray:
     z += 8.0 * np.exp(-(((e + 30) / 25) ** 2 + ((n - 60) / 25) ** 2))
     z += 0.03 * e
     return z
+
+
+SEA_Z = 0.0
+SEA_RGB = (30, 140, 150)  # 잔잔한 청록 바다
+
+
+def terrain_sea(e: np.ndarray, n: np.ndarray, sea_e: float) -> np.ndarray:
+    """e < sea_e는 수면(SEA_Z). 육지는 물가에서 10 m에 걸쳐 수면 높이에서 원래 지형으로 올라감 (해변)."""
+    ramp = np.clip((e - sea_e) / 10.0, 0.0, 1.0)
+    return np.where(e < sea_e, SEA_Z, SEA_Z + (terrain(e, n) - SEA_Z) * ramp)
+
+
+def _add_sea(tex: np.ndarray, sea_e: float, seed: int) -> np.ndarray:
+    """무늬의 e < sea_e 부분을 잔물결 정도의 약한 잡음만 있는 청록 수면으로 바꿈."""
+    xmin = EXTENT[0]
+    col = int((sea_e - xmin) / TEX_RES)
+    rng = np.random.default_rng(seed + 7)
+    h = tex.shape[0]
+    sea = np.array(SEA_RGB, np.float32) + rng.normal(0, 0.6, (h, col, 1))
+    out = tex.copy()
+    out[:, :col] = np.clip(sea, 0, 255).astype(np.uint8)
+    return out
 
 
 def _texture(seed: int = 0) -> np.ndarray:
@@ -95,7 +119,7 @@ def rotation(yaw_deg: float, tilt_x_deg: float, tilt_y_deg: float) -> np.ndarray
     return rz @ nadir @ rx @ ry
 
 
-def _render(tex: np.ndarray, c: tuple[float, float, float], R: np.ndarray) -> np.ndarray:
+def _render(tex: np.ndarray, c: tuple[float, float, float], R: np.ndarray, sea_e: float | None = None) -> np.ndarray:
     xmin, ymin, xmax, ymax = EXTENT
     u, v = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
     rays = np.stack([(u - W / 2) / F_PX, (v - H / 2) / F_PX, np.ones_like(u)], axis=-1) @ R.T
@@ -104,7 +128,7 @@ def _render(tex: np.ndarray, c: tuple[float, float, float], R: np.ndarray) -> np
         t = (z - c[2]) / rays[..., 2]
         e = c[0] + t * rays[..., 0]
         n = c[1] + t * rays[..., 1]
-        z = terrain(e, n)
+        z = terrain(e, n) if sea_e is None else terrain_sea(e, n, sea_e)
     col = ((e - xmin) / TEX_RES).astype(np.float32)
     row = ((ymax - n) / TEX_RES).astype(np.float32)
     return cv2.remap(tex, col, row, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
@@ -153,14 +177,17 @@ def _write_jpeg(path: Path, rgb: np.ndarray, lon: float, lat: float, rel_alt: fl
 
 def make_scene(
     folder: Path, rows: int = 3, cols: int = 4, seed: int = 0,
-    gps_bias: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    gps_bias: tuple[float, float, float] = (0.0, 0.0, 0.0), sea_e: float | None = None,
 ) -> Scene:
     """rows×cols 격자 비행 영상 세트를 만든다 (전방 중복 약 70%, 측방 약 60%).
 
     gps_bias: EXIF GPS에 더할 오차 (E, N, 고도) [m]. GCP 보정 시험용.
+    sea_e: 바다 장면. e < sea_e를 무늬 없는 청록 수면(높이 SEA_Z)으로 만듦 (수면 처리 시험용).
     """
     folder.mkdir(parents=True, exist_ok=True)
     tex = _texture(seed)
+    if sea_e is not None:
+        tex = _add_sea(tex, sea_e, seed)
     to_utm = Transformer.from_crs(4326, EPSG, always_xy=True)
     to_ll = Transformer.from_crs(EPSG, 4326, always_xy=True)
     e0, n0 = to_utm.transform(LON0, LAT0)
@@ -181,8 +208,8 @@ def make_scene(
             R = rotation(yaw + rng.normal(0, 2.0), rng.uniform(-3, 3), rng.uniform(-3, 3))
             name = f"DJI_{k:04d}.JPG"
             lon, lat = to_ll.transform(e0 + ce + gps_bias[0], n0 + cn + gps_bias[1])
-            _write_jpeg(folder / name, _render(tex, (ce, cn, cz), R), lon, lat, cz + gps_bias[2], yaw)
+            _write_jpeg(folder / name, _render(tex, (ce, cn, cz), R, sea_e), lon, lat, cz + gps_bias[2], yaw)
             cams[name] = (ce, cn, cz)
             rots[name] = R
             k += 1
-    return Scene(folder, cams, rots, (e0, n0))
+    return Scene(folder, cams, rots, (e0, n0), sea_e)

@@ -126,7 +126,7 @@ class TextEmitter(Emitter):
         self._kv([("정합", f"{s['num_registered']}/{s['num_input_images']}장"),
                   ("재투영 오차", f"{s['mean_reprojection_error_px']:.2f} px"),
                   ("좌표계", f"EPSG:{g['epsg']}"), ("GPS 잔차", f"{g['gps_residual_rms_m']:.2f} m"),
-                  ("시간", f"{d['timings_s']['total_s']:.0f}초")])
+                  ("시간", f"{d['timings_s']['total_s']:.0f}초")] + self._align_water_rows(d))
         for w in d.get("warnings", []):
             self._line(f"⚠ {w}")
 
@@ -146,10 +146,36 @@ class TextEmitter(Emitter):
             rows.insert(0, ("보정", f"{r['mode']}, 재투영 {r['before']['rmse_px']:.2f} → {r['after']['rmse_px']:.2f} px"))
             if chk:
                 rows.insert(1, ("검사점", f"{chk['count']}점, 수평 {chk['rmse_xy']:.3f} m, 수직 {chk['rmse_z']:.3f} m"))
-        rows += self._index_rows(d)
+        rows += self._index_rows(d) + self._water_rows(d)
         self._kv(rows)
         for w in d.get("warnings", []):
             self._line(f"⚠ {w}")
+
+    @staticmethod
+    def _align_water_rows(d: dict) -> list[tuple[str, str]]:
+        w = d.get("water")
+        if not isinstance(w, dict) or w.get("image_fraction") is None:
+            return []
+        txt = f"수면 비율 {w['image_fraction'] * 100:.1f}%, "
+        txt += f"특징점 제외 {w.get('feature_masked_images', 0)}장" if w.get("active") else "수면 처리 안 함"
+        return [("수면", txt)]
+
+    @staticmethod
+    def _water_rows(d: dict) -> list[tuple[str, str]]:
+        w = d.get("water")
+        if not isinstance(w, dict):
+            return []
+        if w.get("note"):
+            return [("수면", w["note"])]
+        if w.get("area_m2"):
+            lv = w.get("levels_m") or sorted({c["level_m"] for c in w.get("detail", [])
+                                              if c.get("water") and c.get("level_m") is not None})
+            return [("수면", f"{w['area_m2']:.0f} m² 평면 (높이 {', '.join(f'{x:.2f}' for x in lv)} m)")]
+        if w.get("mode") == "off":
+            return [("수면", "처리 안 함 (off)")]
+        frac = w.get("image_fraction")
+        why = f"수면 비율 {frac * 100:.1f}%" if frac is not None else ""
+        return [("수면", "평면으로 덮은 곳 없음" + (f" ({why})" if why else ""))]
 
     @staticmethod
     def _index_rows(d: dict) -> list[tuple[str, str]]:

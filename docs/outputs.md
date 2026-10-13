@@ -316,3 +316,28 @@ evi, _, _ = qo.indices.compute_raster("out/", "EVI", scale=0.25)
 - 지수 목록·식은 [핵심 개념](concepts.md#식생수분-지수-orthooptionsindices), 계산 함수는 [`quickortho.indices`](api-reference.md#quickorthoindices-모듈) 참고
 - 원본 밴드 영상 한 장의 방사보정만 필요하면 `quickortho.multispectral` 모듈을 씀 ([API 레퍼런스](api-reference.md#quickorthomultispectral-모듈))
 
+
+## 11. 수면 마스크와 수면 높이
+
+수면 처리([핵심 개념 11절](concepts.md#11-수면-처리))의 판별 결과와 수면 높이도 변수로 받음.
+
+```python
+r = qo.Project.create("coast/", "out/").process()
+w = r.water                                   # WaterInfo (0.5.0 전 결과·다중분광이면 None)
+print(w.active, w.image_fraction, w.area_m2, w.levels_m)
+
+masks = qo.Project.open("out/").water_masks()  # {"DJI_0446.JPG": (360, 480) uint8 0/1/2, ...}
+
+# 영상 마스크를 원본 해상도로 키워 쓰기 (수면 화소 = True)
+import cv2
+m = masks["DJI_0446.JPG"]
+full = cv2.resize((m > 0).astype("uint8"), (5472, 3648), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+# 정사 격자의 수면 칸: water="off"로 만든 DSM에 수면 평면을 따로 적용해 수면 칸 bool을 얻음
+z, tf, crs = qo.read_dsm("out_off/")
+p = qo.Project.open("out_off/")
+z2, water_cells, level, stats = qo.water.flatten_dsm(z, tf, p.cameras(), masks, p.points())
+```
+
+- 마스크는 사진 좌표 기준(긴 변 480px)이고, 수면 칸(`water_cells`)은 DSM 격자 기준임 (정사 모자이크보다 성김)
+- 수면 높이는 결과 좌표계의 높이임. GCP 보정 전에는 GPS 고도 기준이라 해수면 0 m가 아닐 수 있음

@@ -67,6 +67,7 @@ STAGES: dict[str, str] = {
     "scan": "EXIF/XMP 스캔",
     "footprints": "촬영 범위 계산 (미리보기)",
     "quicklook": "간이 모자이크 생성 (미리보기)",
+    "water": "수면 판별",
     "features": "특징점 추출",
     "matching": "특징점 매칭",
     "mapping": "카메라 위치·자세 추정 (SfM)",

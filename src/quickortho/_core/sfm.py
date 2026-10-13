@@ -97,10 +97,13 @@ def run_sfm(
     camera_model: str | None = None,
     camera_params: str | None = None,
     fixed_intrinsics: bool = False,
+    mask_dir: Path | None = None,
 ) -> tuple[pycolmap.Reconstruction, dict]:
     """camera_model·camera_params: 내부표정을 메타데이터로 아는 카메라(다중분광 등)의 COLMAP 모델·파라미터 초깃값.
     주면 모든 영상이 한 카메라를 공유함. fixed_intrinsics: 번들 조정에서 내부표정을 고정함.
     공개 옵션(SfmOptions)에 두지 않는 이유: COLMAP 파라미터 문자열이라 SDK 버전 간 약속으로 두기 어렵고, 지금은 다중분광 전용임.
+    mask_dir: 특징점을 뽑지 않을 영역 마스크 폴더 (<영상 이름>.png, 검정=제외). 수면 처리에서 씀.
+    주면 모든 영상에 마스크 파일이 있어야 함 (없으면 COLMAP이 그 영상의 특징점을 뽑지 않음).
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     db_path = work_dir / "database.db"
@@ -120,6 +123,8 @@ def run_sfm(
     reader.camera_model = camera_model or "OPENCV"
     if camera_params:
         reader.camera_params = camera_params
+    if mask_dir is not None:
+        reader.mask_path = str(mask_dir)
     _run_with_progress(
         lambda: pycolmap.extract_features(
             db_path,

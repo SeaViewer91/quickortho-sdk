@@ -22,6 +22,7 @@ from .._version import __version__
 from ..errors import InputError, ProcessingError
 from ..options import OrthoOptions
 from . import multispectral as msp
+from . import water as wat
 from .color import estimate_gains
 from .ms_ortho import (
     band_gsd,
@@ -89,6 +90,8 @@ def run_align(
 
     msref = Project(out_dir).dir / "msref"
     msref_new = Project(out_dir).dir / "msref.new"
+    pdir = Project(out_dir).dir
+    water_info = None
     with PeakMemory() as mem:
         try:
             # 0) 스캔
@@ -108,6 +111,7 @@ def run_align(
             # 새 정렬이 중단·실패해도 이전 다중분광 워크스페이스는 그대로 쓸 수 있게 하기 위해서다
             ms_ds, image_dir, sfm_kw = None, folder, {}
             shutil.rmtree(msref_new, ignore_errors=True)
+            _clear_water(pdir, new_only=True)
             if scan.get("multispectral"):
                 ms_ds = msp.scan_multispectral(folder)
                 ms_info = scan["multispectral"]
@@ -141,6 +145,14 @@ def run_align(
             if scan["summary"]["oblique"]:
                 warnings.append(f"경사 촬영 영상 {scan['summary']['oblique']}장 포함")
 
+            # 수면 판별: 넓은 수면이 있으면 수면 안쪽의 특징점을 빼고(정합 안정), 정사 단계에서 DSM 수면을 평면으로 덮음
+            if ms_ds is not None and opts.water == "on":
+                warnings.append(MS_WATER_WARNING)
+            if ms_ds is None and opts.water != "off":
+                water_info, mask_dir = _water_for_align(pdir, image_dir, images, opts, out, timings, work)
+                if mask_dir is not None:
+                    sfm_kw["mask_dir"] = mask_dir
+
             # 1) SfM
             rec, sfm_stats = run_sfm(
                 image_dir, [im["file"] for im in images], work, has_gps=len(gps) >= 3, opts=opts.sfm, out=out,
@@ -171,7 +183,12 @@ def run_align(
                 image_dir = msref
             proj.save_base(rec, geo.projector.epsg, geo.origin)
             proj.save_meta(image_dir, gps, __version__, render={}, ms_source=folder if ms_ds else None)
+            # 수면 판별 결과도 정렬이 끝난 뒤 바꾼다 (새 정렬이 중단·실패하면 이전 판별 결과가 남음)
+            w = _commit_water(pdir, water_info)
+            if w:
+                warnings.append(w)
         finally:
+            _clear_water(pdir, new_only=True)
             shutil.rmtree(msref_new, ignore_errors=True)
             if not opts.keep_work:
                 shutil.rmtree(work, ignore_errors=True)
@@ -202,6 +219,8 @@ def run_align(
         "peak_memory_mb": round(mem.peak / 1024 / 1024, 1),
         "warnings": warnings,
     }
+    if water_info is not None:
+        align["water"] = water_info
     proj.save_align_report(align)
     (out_dir / "report.json").write_text(json.dumps(align, ensure_ascii=False, indent=2), encoding="utf-8")
     return align, rec, geo.projector.epsg
@@ -232,6 +251,127 @@ def run_render(
     proj.update_render(opts.render_dict(), __version__)
     timings["render_total_s"] = time.perf_counter() - t_start
     return compose_report(proj, products, timings, mem.peak)
+
+
+# ── 수면 처리 ───────────────────────────────────────────────────────
+# 판별 결과: project/water/<영상 경로>.png (0/100/200), 요약: project/water.json {"source": "auto"|"user", ...}
+# 새 정렬은 water.new/·water.new.json에 만들고 정렬이 끝나면 바꾼다. 사용자 마스크(source user)는 정렬이 덮어쓰지 않는다.
+
+
+MS_WATER_WARNING = "다중분광 영상에는 아직 수면 처리를 적용하지 않음"
+
+
+def _water_paths(pdir: Path, new: bool = False) -> tuple[Path, Path]:
+    return (pdir / "water.new", pdir / "water.new.json") if new else (pdir / "water", pdir / "water.json")
+
+
+def _clear_water(pdir: Path, new_only: bool = False) -> None:
+    """임시 판별 결과(water.new 등)를 지운다. new_only=False면 저장된 판별 결과(사용자 마스크 포함)도 지운다."""
+    pairs = [_water_paths(pdir, True)] + ([] if new_only else [_water_paths(pdir)])
+    for d, j in pairs:
+        for x in (d, d.with_name(d.name + ".tmp"), d.with_name(d.name + ".old")):
+            shutil.rmtree(x, ignore_errors=True)
+        for x in (j, j.with_name(j.name + ".tmp")):
+            x.unlink(missing_ok=True)
+    if not new_only:
+        shutil.rmtree(pdir / "water.old", ignore_errors=True)
+
+
+def _user_water(pdir: Path) -> bool:
+    """사용자 마스크가 있는지 (요약의 source가 user이고 마스크 파일이 실제로 있음)."""
+    d, j = _water_paths(pdir)
+    try:
+        user = json.loads(j.read_text(encoding="utf-8")).get("source") == "user"
+    except (OSError, ValueError):
+        return False
+    return user and d.is_dir() and any(d.rglob("*.png"))
+
+
+def _water_summary(mode: str, active: bool, det: "wat.Detection", source: str) -> dict:
+    return {"mode": mode, "active": active, "source": source, "image_fraction": round(det.fraction, 4),
+            "images_with_water": det.images_with_water, **det.stats}
+
+
+def _water_for_align(pdir, image_dir, images, opts, out, timings, work) -> tuple[dict, Path | None]:
+    """정렬 전 수면 판별. 반환: (보고서 water 항목, 특징점 제외 마스크 폴더 또는 None)."""
+    t0 = time.perf_counter()
+    names = [im["file"] for im in images]
+    saved = wat.load_detection(*_water_paths(pdir)) if _user_water(pdir) else None
+    det = None
+    if saved is not None:  # 사용자가 넣은 마스크 (Project.set_water_masks). 이번 영상에 해당하는 것만 씀
+        mine = {k: v for k, v in saved[0].masks.items() if k in set(names)}
+        if mine:
+            det, source = wat.summarize(mine), "user"
+            out.log(f"사용자 수면 마스크 {len(mine)}장을 씀")
+        else:
+            out.log("사용자 수면 마스크가 이번 영상과 이름이 맞지 않아 자동으로 판별함", "warn")
+    if det is None:
+        out.stage("water", "수면 판별")
+        det = wat.detect(image_dir, names, out, opts.sfm.num_threads)
+        wat.save_detection(det, *_water_paths(pdir, new=True), source="auto")
+        source = "auto"
+    active = wat.decide(opts.water, det)
+    info = _water_summary(opts.water, active, det, source)
+    mask_dir = None
+    if active:
+        sizes = {im["file"]: (im["width"], im["height"]) for im in images if im.get("width")}
+        n = wat.write_feature_masks(det.masks, sizes, work / "masks")
+        info["feature_masked_images"] = n
+        mask_dir = work / "masks" if n else None
+    else:
+        info["feature_masked_images"] = 0
+    out.log(f"수면 비율 {det.fraction * 100:.1f}% (수면이 보이는 영상 {det.images_with_water}장) → "
+            + ("수면 처리 켬" if active else "수면 처리 안 함"))
+    timings["water_s"] = time.perf_counter() - t0
+    return info, mask_dir
+
+
+def _commit_water(pdir: Path, water_info: dict | None) -> str | None:
+    """정렬이 끝난 뒤 새 판별 결과로 바꾼다. 판별하지 않았으면(off) 이전 자동 판별 결과는 지운다 (사용자 마스크는 둠).
+
+    반환: 실패했을 때 경고 문장 (정렬 결과는 살림. 판별 결과는 정사 단계에서 필요하면 다시 만듦).
+    """
+    if _user_water(pdir):
+        return None
+    new_d, new_j = _water_paths(pdir, new=True)
+    d, j = _water_paths(pdir)
+    old = pdir / "water.old"
+    try:
+        shutil.rmtree(old, ignore_errors=True)
+        if d.exists():
+            os.replace(d, old)  # 잠긴 파일이 있으면 여기서 실패하고 이전 결과가 그대로 남음
+        j.unlink(missing_ok=True)
+        if water_info is not None and new_d.is_dir():
+            os.replace(new_d, d)
+            os.replace(new_j, j)
+        shutil.rmtree(old, ignore_errors=True)
+    except OSError as e:
+        return f"수면 판별 결과를 저장하지 못함 ({e}). 정사 단계에서 수면 처리를 켜면 다시 판별함"
+    return None
+
+
+def _water_for_render(pdir, opts, image_dir, names, kind, out, timings) -> tuple[dict | None, dict]:
+    """정사 단계의 수면 입력. 반환: (DSM에 쓸 영상별 마스크 또는 None, 보고서 water 항목).
+
+    저장된 판별 결과가 있으면 다시 판별하지 않는다. 없으면(정렬 때 off, 0.5.0 전 워크스페이스) 지금 판별해 저장한다.
+    """
+    if opts.water == "off":
+        return None, {"mode": "off", "active": False}
+    if kind != "sparse":  # 판별해도 쓸 곳이 없음
+        return None, {"mode": opts.water, "active": False, "note": "외부·평면 DSM에는 수면 평면을 적용하지 않음"}
+    saved = wat.load_detection(*_water_paths(pdir))
+    if saved is not None:
+        det, source = saved[0], saved[1].get("source", "auto")
+    else:
+        t0 = time.perf_counter()
+        out.stage("water", "수면 판별")
+        det = wat.detect(image_dir, names, out)
+        wat.save_detection(det, *_water_paths(pdir), source="auto")
+        source = "auto"
+        timings["water_s"] = time.perf_counter() - t0
+    active = wat.decide(opts.water, det)
+    info = _water_summary(opts.water, active, det, source)
+    return (det.masks if active else None), info
 
 
 def _check_radiometry_available(mode: str, ms_info: dict) -> None:
@@ -293,6 +433,17 @@ def saved_render_options(meta: dict) -> tuple[OrthoOptions, str | None]:
         if gsd_changed:
             note += ". 이전 해상도로 만들려면 다른 옵션은 그대로 두고 gsd_scale=2로 orthomosaic()을 다시 실행함"
     # 저장된 지수 선택은 긴 처리(번들 조정·정사투영) 끝에 실패하지 않도록 여기서 검사한다. 잘못된 값이면 기본값으로
+    # 수면 처리: 0.5.0 전에 저장한 설정에는 없음 → 끔 (그때는 수면 처리 없이 만들었음)
+    w = render.get("water")
+    if w is None:
+        render["water"] = "off"
+    else:
+        try:
+            render["water"] = wat.normalize_mode(w if isinstance(w, str) else None if w is None else str(w))
+        except ValueError:
+            render["water"] = "off"
+            bad = f"저장된 수면 처리 설정({w!r})을 해석할 수 없어 끄고 만듦"
+            note = f"{note}. {bad}" if note else bad
     idx = render.get("indices")
     if idx is not None:
         try:
@@ -363,6 +514,9 @@ def compose_report(
     products = dict(products)
     extra_warnings = list(products.pop("_warnings", [])) + list(extra_warnings or [])  # 이번 정사 단계의 경고
     report.update(products)
+    if isinstance(products.get("water"), dict) and isinstance(align.get("water"), dict):
+        # 판별 정보(수면 비율, 특징점 제외 영상 수)는 정렬 때 값에 이번 정사 단계의 방식·DSM 통계를 합침
+        report["water"] = {**align["water"], **products["water"]}
     report["report_version"] = REPORT_VERSION
     report["engine_version"] = __version__
     t = {k: v for k, v in align.get("timings_s", {}).items() if k != "total_s"}
@@ -388,7 +542,7 @@ def compose_report(
         warnings += part.get("warnings", [])
     else:
         report.pop("refine", None)
-    report["warnings"] = warnings + list(extra_warnings or [])
+    report["warnings"] = list(dict.fromkeys(warnings + list(extra_warnings or [])))  # 같은 경고는 한 번만
     (proj.ortho_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return report
 
@@ -418,6 +572,11 @@ def render_products(
     t0 = time.perf_counter()
     mode = str(opts.dsm)
     kind = mode if mode in ("sparse", "plane") else "external"
+    water_masks, water_info = None, None
+    if ms_ds is None:  # 수면 판별 결과 (저장된 것이 없으면 여기서 판별, 'water' 단계)
+        names = sorted(im.name for im in rec.images.values() if im.has_pose)
+        water_masks, water_info = _water_for_render(Project(out_dir).dir, opts, image_dir, names, kind, out, timings)
+        t0 = time.perf_counter()
     out.stage("dsm", {"sparse": "희소 점군으로 간이 DSM 생성", "plane": "수평면 DSM 생성",
                       "external": "외부 DSM 불러오기"}[kind])
     pts = remove_z_outliers(sparse_points(rec))
@@ -456,6 +615,16 @@ def render_products(
         # 점 간격의 절반 격자 (0.2.x의 1.5배 격자 + 강한 평활화는 갈대·관목·작은 기복의 높이를 지워 영상 간 어긋남을 키웠음)
         dsm_res = max(0.5, 0.5 * math.sqrt(area / len(pts)))
         dsm = build_dsm(pts, bounds, dsm_res)
+        if water_masks:
+            # 수면 칸을 물가 높이의 평면으로 덮음 (점은 지우지 않음)
+            wmask, level, wstats = wat.ground_water(views, dsm, water_masks, pts)
+            if wmask.any():
+                dsm = wat.flatten(dsm, wmask, level)
+                lv = sorted({round(float(x), 2) for x in np.unique(level[wmask])})
+                out.log(f"수면 {wstats['area_m2']:.0f} m²를 평면(높이 {', '.join(f'{x:.2f}' for x in lv)} m)으로 덮음")
+            else:
+                out.log("수면으로 확정한 곳 없음 (수면 후보 안에 3D 점이 많거나 주변보다 높음)")
+            water_info.update(wstats)
     elif kind == "plane":
         dsm_res = max(0.5, math.sqrt(area) / 256)
         dsm = plane_dsm(ground_z, bounds, dsm_res, num_points=len(pts))
@@ -471,8 +640,11 @@ def render_products(
     cog_tmp = out_dir / "orthomosaic.cog.tmp.tif"
     final = out_dir / "orthomosaic.tif"
     if ms_ds is not None:
-        return _render_ms(views, sources, ms_ds, factors, radiometry, rec, dsm, dsm_info, dsm_res, ground_z,
-                          bounds, crs, gsd, src_gsd, bgsd, out_dir, opts, out, timings, t0)
+        res = _render_ms(views, sources, ms_ds, factors, radiometry, rec, dsm, dsm_info, dsm_res, ground_z,
+                         bounds, crs, gsd, src_gsd, bgsd, out_dir, opts, out, timings, t0)
+        if opts.water == "on":
+            res["_warnings"] = list(res.get("_warnings", [])) + [MS_WATER_WARNING]
+        return res
     try:
         _write_dsm(dsm, dsm_tmp, crs)
         timings["dsm_s"] = time.perf_counter() - t0
@@ -513,7 +685,9 @@ def render_products(
     _write_preview(final, out_dir / "preview.png")
     corners = _corners_lonlat(final)
     timings["finalize_s"] = time.perf_counter() - t0
+    extra = {"water": water_info} if water_info is not None else {}
     return {
+        **extra,
         "dsm": {**dsm_info, "resolution_m": dsm_res, "num_points": dsm.num_points},
         "ortho": {**ortho_stats, "source_gsd_m": src_gsd},
         "outputs": {

@@ -392,3 +392,11 @@ def test_ms_render_index_failure_keeps_previous(ms_workspace, monkeypatch):
         qo.Project.open(ms_workspace).orthomosaic(qo.OrthoOptions(gsd_scale=4, indices=["NDWI"]))
     assert [_sha(f) for f in files] == before
     assert not list(ms_workspace.glob("*.tmp.tif")) and not (ms_workspace / "indices.new").exists()
+
+
+def test_ms_water_not_applied(ms_processed, ms_workspace):
+    """다중분광에는 수면 처리를 하지 않음 (판별 단계 없음, on이면 경고)."""
+    assert "water" not in [e.stage for e in ms_processed[1] if e.type == "stage"]
+    assert "water" not in ms_processed[2].report and ms_processed[2].water is None
+    r = qo.Project.open(ms_workspace).orthomosaic(qo.OrthoOptions(gsd_scale=4, water="on"))
+    assert any("수면 처리" in w for w in r.warnings) and r.water is None

@@ -13,7 +13,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
+
+import numpy as np
 
 from ._core import marking
 from ._core.pipeline import make_indices, run_align, run_render
@@ -74,6 +76,18 @@ def _check_options(opts: OrthoOptions) -> OrthoOptions:
             opts = replace(opts, indices=normalize_selection(list(opts.indices)))
         except ValueError as e:
             bad(str(e))
+    from ._core.water import normalize_mode
+
+    if not isinstance(opts.water, str):
+        bad(f"water는 'auto', 'on', 'off' 중 하나여야 함: {opts.water!r}")
+    try:
+        water = normalize_mode(opts.water)
+    except ValueError as e:
+        bad(str(e))
+    if water != opts.water:
+        from dataclasses import replace
+
+        opts = replace(opts, water=water)
     if opts.epsg is not None:
         from ._core.geo import crs_info
 
@@ -375,7 +389,7 @@ class Project:
         """스캔 → SfM → GPS 좌표 정렬을 실행하고 결과를 ``project/``에 저장함.
 
         이전 정렬·보정 결과와 정사 모자이크 결과물은 새 정렬과 맞지 않으므로 지움. GCP·타이포인트의 사진 표시는 유지함.
-        ``options``에서는 ``sfm``, ``keep_work``, ``epsg``만 씀.
+        ``options``에서는 ``sfm``, ``keep_work``, ``epsg``, ``water``(수면 판별·특징점 제외)만 씀.
 
         Raises:
             InputError: 영상이 없음(``no_images``), 처리 가능한 영상이 3장 미만(``too_few_images``),
@@ -394,7 +408,7 @@ class Project:
 
         SfM을 다시 하지 않으므로 GSD만 바꿔 다시 만들 때 빠름. ``options``에서는 ``gsd_m``, ``gsd_scale``,
         ``cache_budget_mb``, ``bounds``, ``grid_origin``, ``dsm``, ``dsm_z``, ``dsm_vertical_align``, ``color_balance``,
-        ``radiometry``, ``ms_normalize``, ``indices``를 씀.
+        ``radiometry``, ``ms_normalize``, ``indices``, ``water``를 씀.
         여기서 쓴 옵션은 저장되어 이후 :meth:`refine`의 재생성에도 쓰임.
 
         Raises:
@@ -434,6 +448,70 @@ class Project:
         out = _start(on_event, cancel)
         report = make_indices(self.workspace, None if indices is None else list(indices), out)
         return OrthoResult.from_report(report, self.workspace)
+
+    # ── 수면 ──
+    def water_masks(self) -> dict[str, np.ndarray]:
+        """저장된 영상별 수면 마스크 (``project/water/``, 긴 변 480px 이하, 0 육지·1 수면 후보·2 확실한 수면).
+
+        SDK가 판별했거나 :meth:`set_water_masks`로 넣은 것. 없으면 빈 dict.
+        """
+        from .water import read_masks
+
+        return read_masks(self.workspace)
+
+    def set_water_masks(self, masks: "Mapping[str, np.ndarray] | str | Path | None") -> int:
+        """자기 수면 마스크(NDWI, 딥러닝 분할 결과 등)를 넣음. 이후 수면 처리는 SDK 판별 대신 이것을 씀. 반환: 넣은 마스크 수.
+
+        masks: 영상 이름(영상 폴더 기준 경로, 예 ``"DJI_0001.JPG"``) → 2차원 배열(0이 아니면 수면, 사진과 해상도가 달라도 됨),
+            또는 ``<영상 이름>.png`` 파일들이 있는 폴더. ``None``이면 넣은 마스크와 저장된 판별 결과를 모두 지움.
+
+        - 정렬 전에 넣으면 정렬의 특징점 제외에도 쓰임. 정렬 뒤에 넣으면 다음 :meth:`orthomosaic`·:meth:`refine`의 DSM 수면 평면에만 쓰임
+        - 넣은 마스크는 다시 정렬해도 지우지 않음 (``None``으로 지움)
+        - ``water="auto"``는 넣은 마스크의 수면 비율로도 판단하므로, 넣은 마스크를 반드시 쓰려면 ``water="on"``으로 처리함
+        - 값 해석은 :func:`quickortho.water.normalize_masks`와 같음 (SDK 형식 0/1/2·0/100/200이면 그대로, 그 밖은 0보다 크면
+          확실한 수면). 다중분광에는 쓰지 않음
+
+        Raises:
+            InputError: 영상 폴더에 없는 이름, 2차원이 아닌 배열, 읽을 수 없는 파일 (``invalid_argument``),
+                없는 폴더(``folder_not_found``).
+        """
+        from ._core import water as _w
+        from ._core.pipeline import _clear_water, _water_paths
+        from .water import normalize_masks
+
+        pdir = self.workspace / "project"
+        if masks is None:
+            _clear_water(pdir)
+            return 0
+        if isinstance(masks, (str, Path)):
+            folder = Path(masks).expanduser()
+            if not folder.is_dir():
+                raise InputError(f"폴더를 찾을 수 없음: {folder}", "folder_not_found")
+            loaded = {}
+            for f in sorted(folder.rglob("*.png")):
+                m = _w._imread(f)
+                if m is None:
+                    raise InputError(f"마스크 파일을 읽을 수 없음: {f}", "invalid_argument")
+                loaded[f.relative_to(folder).as_posix()[:-4]] = m
+            masks = loaded
+        norm = normalize_masks(masks)
+        if not norm:
+            raise InputError("마스크가 없음", "invalid_argument")
+        img_dir = self.images
+        from pathlib import PurePosixPath
+
+        bad_names = [n for n in norm if PurePosixPath(n).is_absolute() or ".." in PurePosixPath(n).parts
+                     or ":" in n.split("/", 1)[0]]
+        if bad_names:
+            raise InputError(f"마스크 이름은 영상 폴더 기준 상대 경로여야 함: {bad_names[0]}", "invalid_argument")
+        missing = [n for n in norm if not (img_dir / n).is_file()]
+        if missing:
+            more = f" 외 {len(missing) - 3}개" if len(missing) > 3 else ""
+            raise InputError(f"영상 폴더에 없는 이름: {', '.join(missing[:3])}{more} (영상 폴더 기준 경로를 씀)",
+                             "invalid_argument")
+        pdir.mkdir(parents=True, exist_ok=True)
+        _w.save_detection(_w.summarize(norm), *_water_paths(pdir), source="user")
+        return len(norm)
 
     # ── 정밀 보정 ──
     def get_edits(self) -> dict[str, Any]:

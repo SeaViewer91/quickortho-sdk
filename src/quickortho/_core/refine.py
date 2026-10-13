@@ -487,7 +487,8 @@ def run_refine(ortho_dir: Path, out: Emitter, reset: bool = False) -> dict:
                                 "cache_budget_mb": opts.cache_budget_mb, "indices": opts.indices}, __version__)
 
     timings["total_s"] = time.perf_counter() - t_start
-    render_t = {k: timings[k] for k in ("dsm_s", "color_s", "bands_s", "ortho_s", "finalize_s") if k in timings}
+    render_t = {k: timings[k] for k in ("water_s", "dsm_s", "color_s", "bands_s", "ortho_s", "finalize_s")
+                if k in timings}
     render_t["render_total_s"] = sum(render_t.values())
     if mode == "base":
         # 보정 취소: 보정 보고서를 지우고 정렬 결과로 다시 만든 정사 모자이크만 보고한다

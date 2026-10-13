@@ -58,7 +58,10 @@ def test_process_end_to_end(processed, scene):
     assert rep["timings_s"]["total_s"] > 0 and res.peak_memory_mb > 0
     # 단계는 정해진 순서로 한 번씩 시작함
     stages = [e.stage for e in events if e.type == "stage"]
-    assert stages == ["scan", "features", "matching", "mapping", "georef", "dsm", "color", "ortho", "finalize"]
+    assert stages == ["scan", "water", "features", "matching", "mapping", "georef", "dsm", "color", "ortho", "finalize"]
+    # 수면 없는 장면: auto는 수면 판별만 하고 처리하지 않음 (0.4.x와 같은 결과)
+    assert rep["water"]["mode"] == "auto" and not rep["water"]["active"] and rep["water"]["image_fraction"] == 0
+    assert res.water is not None and not res.water.applied
     assert all(s in qo.STAGES for s in stages)
     fr = [e.fraction for e in events if e.type == "progress"]
     assert fr and all(0.0 <= f <= 1.0 for f in fr)

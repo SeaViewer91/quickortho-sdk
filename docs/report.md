@@ -10,6 +10,8 @@
 | `report.json` | JSON (UTF-8) | 처리 보고서 (2절) |
 | `indices/<이름>.tif` | (다중분광) GeoTIFF (COG), float32 단일 밴드, nodata NaN, 예측자 3 | 고른 식생·수분 지수 하나 (밴드 설명에 지수 이름). 0.4.1부터 |
 | `indices/<이름>.png` | (다중분광) PNG RGBA, 긴 변 2048px 이하 | 지수를 미리보기 범위(`index_legend`의 `min`~`max`)로 색 띠에 칠한 것. 자료 없는 곳은 투명 |
+| `project/water/<영상 경로>.png` | PNG 8비트 회색, 긴 변 480px | 영상별 수면 판별 (0 육지, 100 수면 후보, 200 확실한 수면). 수면 판별을 했을 때만. 0.5.0부터 |
+| `project/water.json` | JSON | 수면 판별 요약 `{"source": "auto"\|"user", "image_fraction", "images_with_water", "confident_fraction"}` |
 
 - 다중분광이면 `orthomosaic.tif`가 밴드별 float32 반사율(nodata NaN, 예측자 3, 밴드 설명에 밴드 이름)이고,
   `preview.png`는 반사율 R·G·B(Blue가 없으면 NIR·Red·Green 위색)를 1~99백분위로 늘인 것임
@@ -38,7 +40,7 @@ with rasterio.open(result.orthomosaic) as ds:
 ```json
 {
   "report_version": 1,
-  "engine_version": "0.4.1",
+  "engine_version": "0.5.0",
   "input": {
     "folder": "/data/flight_0925",
     "total_files": 13, "selected": 13, "with_gps": 13,
@@ -116,7 +118,7 @@ with rasterio.open(result.orthomosaic) as ds:
 | `ortho.color` | (보정 시) `{"cell_m": 보정 격자 셀 크기(m), "grid": [64, 48] 영상별 이득 맵 크기, "images": 이득 맵을 만든 영상 수, "gain_p5", "gain_p95": 이득(세 채널 평균)의 5·95 백분위}`. 1에서 멀수록 영상 간 밝기 차이가 컸다는 뜻임. 이득 맵을 만든 영상이 없으면 `color` 항목 없이 `color_balance`가 `false`임 |
 | `outputs.*` | 결과 파일 절대 경로 |
 | `preview_corners_lonlat` | 결과 네 모서리 경위도 [좌상, 우상, 우하, 좌하] |
-| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`). `total_s`는 두 단계의 합. `make_indices()`로 지수만 다시 만들면 `indices_s`가 추가됨 (`total_s`에 넣지 않음) |
+| `timings_s` | 단계별 시간(초). 정렬 단계 + 마지막 정사 모자이크 단계(`dsm_s`, `color_s`, `bands_s`, `ortho_s`, `finalize_s`). 수면 판별을 했으면 `water_s`. `total_s`는 두 단계의 합. `make_indices()`로 지수만 다시 만들면 `indices_s`가 추가됨 (`total_s`에 넣지 않음) |
 | `peak_memory_mb` | 정렬·마지막 정사 모자이크 중 최대 메모리(RSS, MB) |
 | `warnings` | 경고 (정렬 경고 + 보정 경고) |
 | `refine` | (보정 후) 보정 결과. 아래 표 |
@@ -147,6 +149,28 @@ with rasterio.open(result.orthomosaic) as ds:
 | `radiometry.panel_missing_bands` | 패널 촬영은 있지만 패널 정보가 없는 밴드 (이때 패널 보정을 쓰지 않음, 경고) |
 | `radiometry.band_alignment` | rig 미세 조정: `captures`(쓴 캡처 수), `initial`(조정 전), `residual`(조정 후). 밴드별 `shift_px`(중앙값 이동), `spread_px`(MAD), `n` |
 | `radiometry.capture_normalization` | 블록 조정: `applied`, `points`(쓴 타이포인트 수), 밴드별 `inconsistency_before_pct`·`inconsistency_after_pct`(캡처 간 불일치 RMS %), `gain_min`·`gain_max` |
+
+### `water` 항목 (수면 처리)
+
+0.5.0부터. 수면 판별을 했거나 정사 단계에 `water`를 준 결과에만 있음 (다중분광에는 없음). 원리는 [핵심 개념 11절](concepts.md#11-수면-처리).
+정렬 때의 판별 정보(수면 비율, 특징점 제외)에 마지막 정사 단계의 방식·DSM 통계를 합친 것임. 데스크톱 앱 v0.5.0과 같은 키에 SDK는 `source`, `levels_m`, `note`를 더함.
+
+| 필드 | 내용 |
+|---|---|
+| `mode` | 마지막 정사 단계의 방식 (`auto`, `on`, `off`) |
+| `active` | 수면 처리를 켰는지 (`off`이면 `false`) |
+| `source` | 마스크 출처 `auto`(SDK 판별) 또는 `user`(`Project.set_water_masks`) |
+| `image_fraction` | 영상 면적 중 수면 비율 평균 |
+| `images_with_water` | 수면이 영상의 1% 넘게 보이는 영상 수 |
+| `confident_fraction` | 영상 면적 중 확실한 수면 비율 평균 |
+| `feature_masked_images` | 정렬에서 특징점을 뺀 영상 수 (정렬 때 판별하지 않았으면 0 또는 없음) |
+| `candidate_cells` | DSM 칸 중 수면 후보(본 영상의 절반 이상이 수면) 칸 수 |
+| `components`, `water_components` | 100 m² 이상 후보 덩어리 수, 그중 수면으로 확정한 수 |
+| `area_m2` | 평면으로 덮은 수면 면적(m²) |
+| `levels_m` | 확정한 수면 덩어리들의 높이(m) |
+| `land_point_density` | 육지 칸의 평균 점 수 (점 밀도 조건의 기준) |
+| `detail` | 덩어리별 `{area_m2, point_ratio, shore_points, inner_points, raised_m, shore_drop_m, level_m, water}` (넓은 순 최대 10개). `point_ratio`는 안쪽 점 밀도 / 육지 밀도, `raised_m`은 덩어리 안 점 중앙값 − 물가 점 중앙값, `shore_drop_m`은 수면 높이 − 물가 점 5백분위 |
+| `note` | 적용하지 않은 이유 (외부·평면 DSM) |
 
 ### `refine` 항목
 

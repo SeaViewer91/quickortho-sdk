@@ -1,6 +1,6 @@
 # API 레퍼런스
 
-대상 버전: 0.4.1
+대상 버전: 0.5.0
 
 ## 목차
 
@@ -8,13 +8,13 @@
 2. [폴더 함수](#2-폴더-함수): `scan`, `preview`, `process`
 3. [Project](#3-project)
 4. [옵션](#4-옵션): `OrthoOptions`, `SfmOptions`, `PreviewOptions`
-5. [결과 객체](#5-결과-객체): `ScanResult`, `PreviewResult`, `AlignResult`, `OrthoResult`, `MultispectralInfo`, `RefineResult`
+5. [결과 객체](#5-결과-객체): `ScanResult`, `PreviewResult`, `AlignResult`, `OrthoResult`, `MultispectralInfo`, `WaterInfo`, `RefineResult`
 6. [진행 이벤트와 중단](#6-진행-이벤트와-중단): `Event`, `EventCallback`, `CancelToken`, `STAGES`, `print_progress`
 7. [GCP](#7-gcp): `Mark`, `GCP`, `TiePoint`, `load_gcps`, `read_gcp_file`
 8. [예외](#8-예외)
 9. [로깅](#9-로깅)
 10. [API 안정성](#10-api-안정성)
-11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_indices`, `band_names`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `quickortho.multispectral`, `quickortho.indices`, `doctor`
+11. [산출물 데이터](#11-산출물-데이터): `read_orthomosaic`, `read_indices`, `band_names`, `read_dsm`, `read_raster`, `CameraPose`, `Cameras`, `PointCloud`, `rotation_from_opk`, `quickortho.multispectral`, `quickortho.indices`, `quickortho.water`, `doctor`
 
 ---
 
@@ -157,7 +157,7 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 
 스캔 → 특징점 추출 → 매칭 → SfM → GPS 좌표 정렬을 실행하고 결과를 `project/`에 저장함.
 
-- `options`: `OrthoOptions`. 이 단계에서는 `sfm`, `keep_work`, `epsg`만 씀
+- `options`: `OrthoOptions`. 이 단계에서는 `sfm`, `keep_work`, `epsg`, `water`(수면 판별·특징점 제외)만 씀
 - 이전 정렬·보정 결과와 정사 모자이크 결과물(`orthomosaic.tif`, `dsm.tif`, `preview.png`, `report.json`)은 지움.
   마지막 정사 모자이크 옵션(`meta.json`의 `render`)도 비우므로, 다시 정렬한 뒤 바로 `refine()`을 부르면 기본 옵션으로 정사 모자이크를 만듦.
   GCP·타이포인트의 사진 표시는 유지함 ([무엇이 언제 지워지는가](concepts.md#무엇이-언제-지워지는가))
@@ -182,7 +182,7 @@ QuickOrtho 데스크톱 앱 v0.2.0 이상이 만든 결과 폴더(`<영상 폴�
 현재 정렬 결과(보정했으면 보정 결과)로 간이 DSM과 정사 모자이크를 만듦. SfM을 다시 하지 않으므로 해상도만 바꿀 때 빠름.
 
 - `options`: `OrthoOptions`. 이 단계에서는 `gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`,
-  `dsm_z`, `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`를 씀
+  `dsm_z`, `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`, `water`를 씀
 - 여기서 쓴 옵션은 `project/meta.json`에 저장되어, 이후 `refine()`이 정사 모자이크를 다시 만들 때도 같은 옵션을 씀
 - 결과물은 임시 파일에 먼저 쓰고 마지막에 교체하므로, 중단·실패해도 이전 결과물이 유지됨
 - 반환: [`OrthoResult`](#orthoresult)
@@ -220,6 +220,33 @@ print(r.indices_skipped)   # Blue가 없는 카메라면 ['EVI']
 
 `align()` 후 `orthomosaic()`을 실행함. 예외는 두 메서드의 예외를 합친 것과 같음.
 정렬 결과는 메모리에서 바로 넘기므로 두 메서드를 따로 부르는 것보다 조금 빠름.
+
+### 수면 마스크 메서드
+
+수면 처리의 원리는 [핵심 개념 11절](concepts.md#11-수면-처리) 참고. 0.5.0부터.
+
+#### `water_masks() -> dict[str, ndarray]`
+
+저장된 영상별 수면 마스크 (`project/water/`). 영상 이름(영상 폴더 기준 경로) → `(h, w)` uint8, 긴 변 480px 이하,
+0 육지·1 수면 후보·2 확실한 수면. SDK가 판별했거나 `set_water_masks()`로 넣은 것. 없으면 빈 dict.
+
+#### `set_water_masks(masks) -> int`
+
+자기 수면 마스크(NDWI, 딥러닝 분할 결과 등)를 넣음. 이후 수면 처리는 SDK 판별 대신 이것을 씀. 반환: 넣은 마스크 수.
+
+- `masks`: 영상 이름 → 2차원 배열(0이 아니면 수면, 사진과 해상도가 달라도 됨), `<영상 이름>.png` 파일들이 있는 폴더, 또는
+  `None`(넣은 마스크와 저장된 판별 결과를 모두 지움). 값 해석은 [`normalize_masks`](#quickorthowater-모듈)와 같음
+- 정렬 전에 넣으면 정렬의 특징점 제외에도, 정렬 뒤에 넣으면 다음 `orthomosaic()`·`refine()`의 DSM 수면 평면에만 쓰임
+- 다시 정렬해도 지우지 않음. 정렬하는 영상과 이름이 하나도 맞지 않으면 그 정렬은 자동 판별을 씀 (경고 로그)
+- `water="auto"`는 넣은 마스크의 수면 비율로도 판단하므로 반드시 쓰려면 `water="on"`으로 처리함
+- 예외: `InputError`(`invalid_argument`: 영상 폴더에 없는 이름, 절대 경로·`..`가 든 이름, 2차원이 아닌 배열, 읽을 수 없는 파일, `folder_not_found`)
+
+```python
+p = qo.Project.create("flight/", "out/")
+p.set_water_masks({"DJI_0001.JPG": ndwi1 > 0.1, "DJI_0002.JPG": ndwi2 > 0.1})
+r = p.process(qo.OrthoOptions(water="on"))
+print(r.water.source, r.water.area_m2)   # user 15458.1
+```
 
 ### 정밀 보정 메서드
 
@@ -365,12 +392,13 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `color_balance` | `True` | orthomosaic | 영상 간 밝기·색 차이 보정 (심라인 이음매의 밝기 단차 제거, [원리](concepts.md#밝기색-보정)). 0.3.1부터. 다중분광에는 쓰지 않음 |
 | `radiometry` | `"auto"` | orthomosaic | (다중분광) 반사율 환산 방식: `"auto"`, `"dls+panel"`, `"dls"`, `"panel"`, `"radiance"` ([설명](concepts.md#반사율-환산-방식-orthooptionsradiometry)). 0.4.0부터 |
 | `ms_normalize` | `True` | orthomosaic | (다중분광) 캡처 간 반사율 블록 조정. 전체 반사율 수준은 유지. 0.4.0부터 |
+| `water` | `"auto"` | align, orthomosaic | 바다·호수 수면 처리: `"auto"`(영상 면적 중 수면 비율 평균 5% 이상이면 켬), `"on"`, `"off"`(0.4.x와 같은 결과). 정렬에서 넓은 수면 안쪽의 특징점을 빼고, 정사에서 희소 점군 DSM의 수면 칸을 물가 높이 평면으로 덮음 ([설명](concepts.md#11-수면-처리)). 다중분광에는 쓰지 않음. 0.5.0부터 |
 | `indices` | `None` | orthomosaic | (다중분광) 만들 지수 이름 목록 (대소문자 무관). `None`이면 NDVI·NDRE·GNDVI, `[]`이면 만들지 않음 ([지수 표](concepts.md#식생수분-지수-orthooptionsindices)). 카메라 밴드로 계산할 수 없는 지수는 건너뜀. RGB에는 쓰지 않음. 0.4.1부터 |
 
-- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 모르는 `radiometry`·지수 이름, 문자열 하나인 `indices`, 경위도 EPSG,
+- 옵션이 잘못되면 `InputError`(`invalid_argument`): GSD 0 이하, `cache_budget_mb` 0 이하, 모르는 `radiometry`·지수 이름·`water`, 문자열 하나인 `indices`, 경위도 EPSG,
   잘못된 `bounds`, 없는 DSM 파일 등. 다중분광에서 요청한 `radiometry`에 필요한 DLS·패널이 없을 때도 같음 (정사 단계에서 발생)
 - `orthomosaic` 단계 옵션(`gsd_m`, `gsd_scale`, `cache_budget_mb`, `bounds`, `grid_origin`, `dsm`, `dsm_z`,
-  `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
+  `dsm_vertical_align`, `color_balance`, `radiometry`, `ms_normalize`, `indices`, `water`)은 워크스페이스에 저장되어 `refine()`의 재생성에도 쓰임.
   단 GCP 보정으로 좌표계가 바뀌면 이전 좌표계 값인 `bounds`, `grid_origin`, 평면 `dsm_z`는 적용하지 않고 경고를 남김.
   새 좌표계 값으로 `orthomosaic()`을 다시 실행함
 - 0.3.0 미만이 저장한 옵션 중 당시 기본값과 같은 값(`gsd_m` 없이 `gsd_scale=2`, `cache_budget_mb=600`)은 `refine()`의
@@ -492,6 +520,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `cameras` | `Cameras` | 정렬 직후 카메라 자세 (속성, 처음 쓸 때 읽음) |
 | `points` | `PointCloud` | 정렬 직후 희소 점군 (속성) |
 | `crs` | `pyproj.CRS` | 좌표계 (속성) |
+| `water` | `WaterInfo \| None` | 정렬 전 수면 판별 결과 (수면 비율, 특징점을 뺀 영상 수). 판별하지 않았으면(`off`, 다중분광) `None`. 0.5.0부터 |
 
 ### `OrthoResult`
 
@@ -514,6 +543,7 @@ DSM을 쓰므로 **정사 모자이크를 만든 워크스페이스**에서만 �
 | `multispectral` | `MultispectralInfo \| None` | 다중분광 결과 정보 (아래 표). RGB면 `None` |
 | `indices` | `dict[str, Path]` | (다중분광) 지수 이름 → GeoTIFF 경로 (속성). RGB거나 지수를 만들지 않았으면 빈 dict. 0.4.1부터 |
 | `indices_skipped` | `list[str]` | (다중분광) 골랐지만 카메라 밴드가 없어 만들지 못한 지수 (속성). 0.4.1부터 |
+| `water` | `WaterInfo \| None` | 수면 처리 정보 (속성, 아래 표). 0.5.0 전 결과·다중분광이면 `None`. 0.5.0부터 |
 | `read(*, scale=1.0, bounds=None, order=None)` | `(image, transform, crs)` | 정사 모자이크 읽기. 다중분광이면 `(H, W, 밴드)` float32 |
 | `read_dsm(*, scale=1.0, bounds=None)` | `(z, transform, crs)` | DSM 읽기 (정사 모자이크와 해상도·범위가 다름) |
 
@@ -551,6 +581,31 @@ print(ms.indices["NDVI"], ms.indices_skipped)
 
 0.4.0 결과 폴더를 열면 `indices`·`index_previews`는 빈 dict이고 `index_names`·`read_indices()`·`index_preview`는 이전 형식을 읽음.
 `make_indices()`로 다시 만들면 새 형식으로 바뀜.
+
+### `WaterInfo`
+
+수면 처리 정보 (`OrthoResult.water`, `AlignResult.water`). 0.5.0부터. 보고서 `water` 항목은 [결과물과 보고서](report.md#water-항목-수면-처리) 참고.
+
+| 속성 | 형식 | 설명 |
+|---|---|---|
+| `mode` | `str` | 요청한 방식 (`"auto"`, `"on"`, `"off"`) |
+| `active` | `bool` | 수면 처리를 했는지 (정사 결과에서는 DSM 수면 평면을 시도했는지) |
+| `applied` | `bool` | DSM의 수면을 실제로 평면으로 덮었는지 (`area_m2 > 0`, 속성) |
+| `source` | `str \| None` | 마스크 출처 `"auto"`(SDK 판별) 또는 `"user"`(`set_water_masks`) |
+| `image_fraction` | `float \| None` | 영상 면적 중 수면 비율 평균 (0~1) |
+| `images_with_water` | `int \| None` | 수면이 영상의 1% 넘게 보이는 영상 수 |
+| `feature_masked_images` | `int` | 정렬에서 특징점을 뺀 영상 수 |
+| `area_m2` | `float` | 평면으로 덮은 수면 면적(m²) |
+| `levels_m` | `list[float]` | 수면 높이(m, 결과 좌표계 높이). 수면 덩어리마다 하나 |
+| `components` | `list[dict]` | 수면 후보 덩어리별 판정 (보고서 `detail`, 넓은 순 최대 10개) |
+| `report` | `dict` | 보고서의 `water` 항목 전체 |
+
+```python
+r = qo.process("coast_flight/", "out/")
+w = r.water
+if w and w.applied:
+    print(f"수면 {w.area_m2 / 1e4:.2f} ha, 높이 {w.levels_m} m")
+```
 
 ### `RefineResult`
 
@@ -864,6 +919,39 @@ v, tf, crs = qi.compute_raster("out/", rdvi)
 
 사용자 지수를 등록하는 함수는 두지 않음. 고른 지수 이름은 워크스페이스(`meta.json`)에 저장되어 `refine()`·CLI·다른 프로세스에서
 다시 쓰이는데, 실행 중에만 등록한 지수는 그때 찾을 수 없어 재생성이 실패하기 때문임.
+
+### `quickortho.water` (모듈)
+
+수면 판별·마스크·DSM 수면 평면. 정사 처리는 `OrthoOptions.water`로 자동 처리하므로, 판별 결과를 직접 보거나 자기 마스크를 쓰거나
+DSM에 수면 평면만 따로 적용할 때 씀. 0.5.0에서 새로 공개했으며 1.0 전까지 바뀔 수 있음.
+
+| 이름 | 설명 |
+|---|---|
+| `MODES` | `("auto", "on", "off")` |
+| `LAND`, `CANDIDATE`, `CONFIDENT` | 마스크 값 0, 1, 2 (확실한 수면만 정렬에서 특징점을 뺌) |
+| `AUTO_MIN_FRACTION`, `MASK_PX` | `0.05`, `480` |
+| `classify(image, **params) -> ndarray` | 영상 한 장(RGB 배열 또는 경로)의 마스크 (긴 변 480px, 0/1/2). 경로면 긴 변 1600px로 읽음. 배열도 긴 변 1500~2000px 정도가 맞음 |
+| `detect(images, *, threads=-1, on_event=None, cancel=None) -> WaterDetection` | 영상 폴더(처리 대상 영상, 이름은 폴더 기준 경로) 또는 파일 경로 목록(이름은 파일 이름)의 마스크. 읽지 못한 영상은 육지로 봄 |
+| `WaterDetection` | `masks`, `fraction`, `images_with_water`, `confident_fraction`, `active(mode="auto")` |
+| `read_masks(workspace) -> dict` | 워크스페이스에 저장된 마스크 (`Project.water_masks()`와 같음) |
+| `normalize_masks(masks) -> dict` | 마스크 묶음을 SDK 형식으로. 묶음 전체가 0/100/200이면 저장 PNG 형식, bool이 아니고 0/1/2이며 2가 있으면 그대로, 그 밖(bool, 0/1, 0/255, 확률)은 0보다 크면 확실한 수면 |
+| `flatten_dsm(dsm, transform, cameras, masks, points, *, clean_points=True, **params)` | DSM의 수면 칸을 물가 높이 평면으로 덮음 (정사 처리와 같은 계산). 반환 `(dsm2, water_mask, level, stats)` |
+| `normalize_mode(mode) -> str` | 방식 이름 검사 |
+
+`flatten_dsm`의 `dsm`·`transform`은 `qo.read_dsm()`, `cameras`는 `Project.cameras()`, `points`는 `Project.points()`(또는 `(N, 3)` 배열)를
+씀. `level`은 수면 칸의 높이(그 밖 NaN), `stats`는 보고서 `water`의 DSM 통계와 같은 키임. 확정 기준을 바꾸려면 `params`로
+`vote_min`(0.5), `empty_ratio`(0.15), `ring_m`(4.0), `level_q`(25), `raised_max`(1.5), `drop_max`(3.0)를 줌.
+
+```python
+from quickortho import water as qw
+
+det = qw.detect("flight/")
+print(f"수면 {det.fraction:.1%}, auto면 {'켬' if det.active() else '끔'}")
+
+p = qo.Project.open("out/")                         # water="off"로 만든 결과
+z, tf, crs = qo.read_dsm("out/")
+z2, wmask, level, stats = qw.flatten_dsm(z, tf, p.cameras(), qw.read_masks("out/") or det.masks, p.points())
+```
 
 ### `doctor(path=".") -> dict`
 

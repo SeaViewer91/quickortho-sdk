@@ -34,9 +34,10 @@ qo.process("flight", "out", on_event=on_event)
 `process()` 기준으로 단계는 다음 순서로 한 번씩 시작함.
 
 ```text
-scan → features → matching → mapping → georef → dsm → color → ortho → finalize
+scan → water → features → matching → mapping → georef → dsm → color → ortho → finalize
 ```
 
+- `water`(수면 판별, 0.5.0부터)는 `water="off"`·다중분광이면 나오지 않음. `orthomosaic()`·`refine()`에서도 저장된 판별 결과가 없으면 `dsm` 앞에 나옴
 - `mapping`은 전역 SfM이 실패해 증분 SfM으로 다시 시도하면 한 번 더 시작함
 - `orthomosaic()`만 부르면 `dsm → color → ortho → finalize`
 - `refine()`은 `refine → refine → dsm → color → ortho → finalize` (준비, 번들 조정)
@@ -53,7 +54,7 @@ scan → features → matching → mapping → georef → dsm → color → orth
 영상이 많아지면 `matching`·`mapping` 비중이 커지므로 대략값으로만 씀. `color`(0.3.1)는 정사투영의 약 3~10%라 3으로 둠.
 
 ```python
-WEIGHTS = {"scan": 1, "features": 16, "matching": 6, "mapping": 12, "georef": 1,
+WEIGHTS = {"scan": 1, "water": 2, "features": 16, "matching": 6, "mapping": 12, "georef": 1,
            "dsm": 1, "color": 3, "bands": 3, "ortho": 40, "finalize": 24}
 ORDER = list(WEIGHTS)
 
@@ -78,7 +79,7 @@ class Overall:
 ```
 
 `mapping`·`georef` 단계는 progress 이벤트가 없고, `dsm`·`finalize`는 단계가 끝날 때 한 번만 나오므로 그동안 값이 멈춰 있음.
-`color`의 `total`은 영상 수의 2배임 (투영 통과와 밝기 읽기 통과).
+`color`의 `total`은 영상 수의 2배임 (투영 통과와 밝기 읽기 통과). `water`의 `total`은 영상 수임.
 처리 함수가 반환되면 1.0으로 표시함.
 
 ### 콜백 작성 규칙
