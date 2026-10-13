@@ -31,6 +31,10 @@ jobs:
           ls -l dist
       - name: 순수 파이썬 wheel인지 확인 (모든 OS 공용)
         run: ls dist/*-py3-none-any.whl
+      - name: 문서 HTML 한 파일 빌드 (깨진 내부 링크가 있으면 실패, 릴리스에 함께 첨부됨)
+        run: |
+          python -m pip install markdown pygments
+          python tools/build_docs_html.py --strict
       - uses: actions/upload-artifact@v6
         with:
           name: dist

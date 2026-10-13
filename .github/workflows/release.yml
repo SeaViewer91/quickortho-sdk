@@ -1,6 +1,6 @@
 name: release
 
-# v* 태그 push 시: 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist 게시
+# v* 태그 push 시: 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist·문서 HTML 게시
 on:
   push:
     tags: ["v*"]

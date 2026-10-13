@@ -49,6 +49,7 @@ tests/
 ├── test_grid_dsm.py   출력 좌표계·격자 고정·평면/외부 DSM 시험
 └── test_*.py          코어 단위 시험
 examples/              예제
+tools/build_docs_html.py  docs/*.md → 목차·검색이 있는 HTML 한 파일 (릴리스 첨부)
 docs/                  문서, 릴리스 노트
 packaging/pyinstaller/ 데스크톱 앱용 단일 폴더 번들 스펙
 .github/workflows/     ci.yml (3 OS 시험), release.yml (태그 릴리스)
@@ -139,8 +140,27 @@ SfM은 스레드 실행 순서에 따라 결과가 조금씩 달라지므로 값
    git push origin v<버전>
    ```
 
-6. `release` 워크플로가 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist를 게시함.
+6. `release` 워크플로가 전체 시험 → 태그·버전 일치 확인 → GitHub Releases에 wheel·sdist·문서 HTML을 게시함.
    버전에 `a`, `b`, `rc`가 들어가면 사전 릴리스로 게시함
+
+### 문서 HTML
+
+CI의 wheel 빌드 단계에서 `tools/build_docs_html.py --strict`로 `docs/`의 모든 문서(릴리스 노트 포함)를
+`dist/quickortho-sdk-docs-<버전>.html` 한 파일로 묶고, 릴리스에 wheel과 함께 첨부함.
+
+- 원본은 `docs/*.md`임. HTML은 고치지 않고 md만 고침
+- 문서 사이 링크(`concepts.md#제목`)는 파일 안의 앵커로 바뀜. 앵커는 GitHub와 같은 규칙으로 만드므로 GitHub에서 동작하는 링크는 HTML에서도 동작함
+- 깨진 내부 링크(없는 파일·제목)가 있으면 `--strict`가 실패하므로 CI가 멈춤. 제목을 바꾸면 그 제목을 가리키는 링크도 함께 고침
+- docs 밖을 가리키는 링크(`../examples/` 등)는 해당 버전 태그의 GitHub 주소로 바뀜
+- 외부 글꼴·스크립트를 쓰지 않으므로 인터넷 없이 열림. 사이드바 목차, 검색(`/` 또는 Ctrl/⌘+K, 한글 부분 일치), 밝게·어둡게, 코드 복사, 인쇄를 지원함
+- 사이드바 묶음과 순서는 스크립트의 `GROUPS`에서 정함. 새 문서를 추가하면 여기에도 추가함
+
+로컬에서 확인:
+
+```bash
+pip install markdown pygments
+python tools/build_docs_html.py --strict    # dist/quickortho-sdk-docs-<버전>.html
+```
 
 ## 8. 데스크톱 앱용 번들 (PyInstaller)
 

@@ -90,6 +90,9 @@ quickortho ortho flight_0925/ -o flight_0925_out/ > events.jsonl
 
 ## 문서
 
+릴리스마다 아래 문서 전체를 목차·검색이 있는 HTML 파일 하나(`quickortho-sdk-docs-<버전>.html`)로 묶어
+[Releases](https://github.com/SeaViewer91/quickortho-sdk/releases)에 함께 올림. 인터넷 없이 브라우저로 열 수 있음.
+
 | 문서 | 내용 |
 |---|---|
 | [설치](docs/installation.md) | 요구 사항, 설치·업그레이드·삭제, 오프라인 설치, OS별 주의 사항 |
